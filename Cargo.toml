@@ -1,0 +1,16 @@
+[package]
+name = "symlinks_database"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+directories = "6.0.0"
+serde = "1.0.229"
+shellexpand = "3.1.2"
+thiserror = "2.0.20"
+toml = "1.1.4"
+walkdir = "2.5.0"
+
+[[bin]]
+name = "lndb"
+path = "src/main.rs"
