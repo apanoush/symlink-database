@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::env::VarError;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -58,6 +59,8 @@ pub enum CliError {
     Symlink(#[from] SymlinkError),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("Environment variable error: {0}")]
+    Env(#[from] shellexpand::LookupError<VarError>),
 }
 
 impl Cli {
@@ -127,6 +130,11 @@ impl Cli {
 
     fn find(&self, target: PathBuf, absolute: bool) -> Result<(), CliError> {
         let config = Config::from_config_file()?;
+
+        let binding = target.to_string_lossy();
+        let expanded = shellexpand::env(&binding)?;
+        let expanded = shellexpand::tilde(&expanded);
+        let target = PathBuf::from(expanded.as_ref());
 
         let target = target
             .strip_prefix(&config.paths.root)
