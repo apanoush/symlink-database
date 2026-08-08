@@ -4,8 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+clap = { version = "4.5.0", features = ["derive"] }
 directories = "6.0.0"
-serde = "1.0.229"
+rusqlite = { version = "0.37.0", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
 shellexpand = "3.1.2"
 thiserror = "2.0.20"
 toml = "1.1.4"
