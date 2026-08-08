@@ -50,6 +50,14 @@ impl Walker {
     }
 
     pub fn search_symlinks(&self) -> Result<Vec<Symlink>, WalkerError> {
+        self.search_symlinks_with(|| {}, |_| {})
+    }
+
+    pub fn search_symlinks_with(
+        &self,
+        mut on_entry: impl FnMut(),
+        mut on_error: impl FnMut(&str),
+    ) -> Result<Vec<Symlink>, WalkerError> {
         let mut symlinks = Vec::new();
 
         for entry in WalkDir::new(&self.subroot) {
@@ -58,12 +66,13 @@ impl Walker {
                     let path = entry.path().to_path_buf();
                     match Symlink::new(&self.root, path) {
                         Ok(symlink) => symlinks.push(symlink),
-                        Err(e) => eprintln!("error: {e}"),
+                        Err(e) => on_error(&e.to_string()),
                     }
                 }
                 Ok(_) => {}
-                Err(e) => eprintln!("error: {e}"),
+                Err(e) => on_error(&e.to_string()),
             }
+            on_entry();
         }
 
         Ok(symlinks)

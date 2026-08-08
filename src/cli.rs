@@ -1,8 +1,10 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use clap::{Parser, Subcommand};
+use indicatif::{ProgressBar, ProgressStyle};
 use thiserror::Error;
 
 use crate::config::Config;
@@ -71,10 +73,30 @@ impl Cli {
         let config = Config::from_config_file()?;
 
         let walker = Walker::new(config.paths.root.clone(), subroot)?;
-        let symlinks = walker.search_symlinks()?;
+
+        let scan_pb = ProgressBar::new_spinner();
+        scan_pb.set_style(
+            ProgressStyle::with_template("{spinner} scanning… {msg}").expect("valid template"),
+        );
+        let scanned = AtomicUsize::new(0);
+        let symlinks = walker.search_symlinks_with(
+            || {
+                let n = scanned.fetch_add(1, Ordering::Relaxed) + 1;
+                scan_pb.set_message(format!("{n} entries"));
+                scan_pb.inc(1);
+            },
+            |err| scan_pb.println(format!("error: {err}")),
+        )?;
+        scan_pb.finish_and_clear();
 
         let database = Database::new(&config.paths.database)?;
-        database.import_many(&symlinks)?;
+
+        let import_pb = ProgressBar::new(symlinks.len() as u64);
+        import_pb.set_style(
+            ProgressStyle::with_template("{bar:40} {pos}/{len} importing").expect("valid template"),
+        );
+        database.import_many_with(&symlinks, || import_pb.inc(1))?;
+        import_pb.finish_and_clear();
 
         let found: HashSet<PathBuf> = symlinks.iter().map(|sl| sl.path().to_path_buf()).collect();
         let deleted = database.remove_missing(&found)?;

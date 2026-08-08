@@ -86,6 +86,14 @@ impl Database {
     }
 
     pub fn import_many(&self, symlinks: &[Symlink]) -> Result<(), DatabaseError> {
+        self.import_many_with(symlinks, || {})
+    }
+
+    pub fn import_many_with(
+        &self,
+        symlinks: &[Symlink],
+        mut on_import: impl FnMut(),
+    ) -> Result<(), DatabaseError> {
         let tx = self.conn.unchecked_transaction()?;
         for symlink in symlinks {
             let path = symlink.path().to_string_lossy();
@@ -107,6 +115,7 @@ impl Database {
                         .as_secs() as i64
                 ],
             )?;
+            on_import();
         }
         tx.commit()?;
         Ok(())
