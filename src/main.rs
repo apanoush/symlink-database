@@ -1,6 +1,6 @@
 use clap::Parser;
 
-use symlinks_database::cli::Cli;
+use symlink_database::cli::Cli;
 
 fn main() {
     let cli = Cli::parse();
