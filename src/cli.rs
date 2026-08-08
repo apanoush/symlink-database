@@ -36,8 +36,11 @@ pub enum Commands {
     },
     /// Show all symlinks in the database that point to the given target
     Find {
-        /// Target path that symlinks point to
+        /// Target path that symlinks point to (relative to root, or absolute)
         target: PathBuf,
+        /// Print absolute paths instead of relative ones
+        #[arg(long)]
+        absolute: bool,
     },
 }
 
@@ -60,7 +63,7 @@ impl Cli {
         match &self.command {
             Commands::Sync { subroot } => self.sync(subroot.clone()),
             Commands::Import { path } => self.import(path.clone()),
-            Commands::Find { target } => self.find(target.clone()),
+            Commands::Find { target, absolute } => self.find(target.clone(), *absolute),
         }
     }
 
@@ -100,8 +103,13 @@ impl Cli {
         Ok(())
     }
 
-    fn find(&self, target: PathBuf) -> Result<(), CliError> {
+    fn find(&self, target: PathBuf, absolute: bool) -> Result<(), CliError> {
         let config = Config::from_config_file()?;
+
+        let target = target
+            .strip_prefix(&config.paths.root)
+            .unwrap_or(&target)
+            .to_path_buf();
 
         let database = Database::new(&config.paths.database)?;
         let records = database.find_by_target(&target)?;
@@ -110,8 +118,13 @@ impl Cli {
             println!("no symlinks found for target {}", target.display());
         } else {
             for rec in records {
+                let path = if absolute {
+                    config.paths.root.join(&rec.path)
+                } else {
+                    rec.path
+                };
                 let broken = if rec.broken { " (broken)" } else { "" };
-                println!("{}{}", rec.path.display(), broken);
+                println!("{}{}", path.display(), broken);
             }
         }
         Ok(())

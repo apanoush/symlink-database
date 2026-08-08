@@ -14,6 +14,8 @@ pub enum SymlinkError {
         target: PathBuf,
         root: PathBuf,
     },
+    #[error("Symlink path {path} is outside root {root}")]
+    PathOutsideRoot { path: PathBuf, root: PathBuf },
 }
 
 #[derive(Debug)]
@@ -56,10 +58,26 @@ impl Symlink {
 
         let broken = !resolved.exists();
 
+        let rel_path = path
+            .strip_prefix(root)
+            .map_err(|_| SymlinkError::PathOutsideRoot {
+                path: path.clone(),
+                root: root.to_path_buf(),
+            })?
+            .to_path_buf();
+        let rel_target = resolved
+            .strip_prefix(root)
+            .map_err(|_| SymlinkError::TargetOutsideRoot {
+                path: path.clone(),
+                target,
+                root: root.to_path_buf(),
+            })?
+            .to_path_buf();
+
         Ok(Self {
             root: root.to_path_buf(),
-            target,
-            path,
+            target: rel_target,
+            path: rel_path,
             broken,
         })
     }
@@ -121,6 +139,8 @@ mod tests {
 
         let sl = Symlink::new(&root, link.clone()).unwrap();
         assert!(!sl.broken());
+        assert_eq!(sl.path(), Path::new("link"));
+        assert_eq!(sl.target(), Path::new("target"));
     }
 
     #[test]
@@ -132,6 +152,8 @@ mod tests {
 
         let sl = Symlink::new(&root, link.clone()).unwrap();
         assert!(sl.broken());
+        assert_eq!(sl.path(), Path::new("broken_link"));
+        assert_eq!(sl.target(), Path::new("missing"));
     }
 
     #[test]
@@ -147,6 +169,7 @@ mod tests {
 
         let sl = Symlink::new(&root, link.clone()).unwrap();
         assert!(!sl.broken());
+        assert_eq!(sl.path(), Path::new("link"));
         assert_eq!(sl.target(), Path::new("sub/target"));
     }
 
@@ -175,5 +198,21 @@ mod tests {
 
         let err = Symlink::new(&root, file).unwrap_err();
         assert!(matches!(err, SymlinkError::NotASymlink(_)));
+    }
+
+    #[test]
+    fn symlink_outside_root_is_rejected() {
+        let dir = TestDir::new();
+        let root = dir.path.join("root");
+        let outside = dir.path.join("outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let target = root.join("target");
+        File::create(&target).unwrap();
+        let link = outside.join("link");
+        symlink(&target, &link).unwrap();
+
+        let err = Symlink::new(&root, link).unwrap_err();
+        assert!(matches!(err, SymlinkError::PathOutsideRoot { .. }));
     }
 }

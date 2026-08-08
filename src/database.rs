@@ -246,7 +246,8 @@ mod tests {
         assert!(!t.db.find_by_path(sl.path()).unwrap().unwrap().broken);
 
         fs::remove_file(t._dir.join("root").join("a_target")).unwrap();
-        sl = Symlink::new(&t._dir.join("root"), sl.path().to_path_buf()).unwrap();
+        let root = t._dir.join("root");
+        sl = Symlink::new(&root, root.join(sl.path())).unwrap();
         assert_eq!(t.db.import(&sl).unwrap(), ImportResult::Updated);
         assert!(t.db.find_by_path(sl.path()).unwrap().unwrap().broken);
         assert_eq!(t.db.count().unwrap(), 1);

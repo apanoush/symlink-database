@@ -141,7 +141,7 @@ mod tests {
         let walker = Walker::new(root.clone(), Some(inside)).unwrap();
         let found = walker.search_symlinks().unwrap();
         assert_eq!(found.len(), 1);
-        assert!(found[0].path().ends_with("in_link"));
+        assert_eq!(found[0].path(), PathBuf::from("inside/in_link"));
     }
 
     #[test]
