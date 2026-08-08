@@ -56,8 +56,10 @@ impl Walker {
             match entry {
                 Ok(entry) if entry.path_is_symlink() => {
                     let path = entry.path().to_path_buf();
-                    let symlink = Symlink::new(&self.root, path)?;
-                    symlinks.push(symlink);
+                    match Symlink::new(&self.root, path) {
+                        Ok(symlink) => symlinks.push(symlink),
+                        Err(e) => eprintln!("error: {e}"),
+                    }
                 }
                 Ok(_) => {}
                 Err(e) => eprintln!("error: {e}"),
@@ -156,10 +158,7 @@ mod tests {
         symlink(&target, &link).unwrap();
 
         let walker = Walker::new(root, None).unwrap();
-        let err = walker.search_symlinks().unwrap_err();
-        assert!(matches!(
-            err,
-            WalkerError::Symlink(SymlinkError::TargetOutsideRoot { .. })
-        ));
+        let found = walker.search_symlinks().unwrap();
+        assert!(found.is_empty());
     }
 }

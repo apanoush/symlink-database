@@ -29,13 +29,13 @@ pub struct Config {
 
 #[derive(Deserialize)]
 pub struct TOMLPaths {
-    root_path: String,
-    database_path: String,
+    root: String,
+    database: String,
 }
 
 pub struct Paths {
-    pub root_path: PathBuf,
-    pub database_path: PathBuf,
+    pub root: PathBuf,
+    pub database: PathBuf,
 }
 
 impl Config {
@@ -64,12 +64,12 @@ impl Config {
 
 impl Paths {
     pub fn default(tp: TOMLPaths) -> Result<Self, ConfigError> {
-        let root_path = PathBuf::from(shellexpand::env(&tp.root_path)?.as_ref());
-        let database_path = PathBuf::from(shellexpand::env(&tp.database_path)?.as_ref());
+        let root_path = PathBuf::from(shellexpand::env(&tp.root)?.as_ref());
+        let database_path = PathBuf::from(shellexpand::env(&tp.database)?.as_ref());
 
         Ok(Self {
-            root_path,
-            database_path,
+            root: root_path,
+            database: database_path,
         })
     }
 }

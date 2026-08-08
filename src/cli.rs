@@ -61,10 +61,10 @@ impl Cli {
     fn sync(&self, subroot: Option<PathBuf>) -> Result<(), CliError> {
         let config = Config::from_config_file()?;
 
-        let walker = Walker::new(config.paths.root_path.clone(), subroot)?;
+        let walker = Walker::new(config.paths.root.clone(), subroot)?;
         let symlinks = walker.search_symlinks()?;
 
-        let database = Database::new(&config.paths.database_path)?;
+        let database = Database::new(&config.paths.database)?;
         database.import_many(&symlinks)?;
 
         let found: HashSet<PathBuf> = symlinks.iter().map(|sl| sl.path().to_path_buf()).collect();
@@ -86,8 +86,8 @@ impl Cli {
             return Err(CliError::Symlink(SymlinkError::NotASymlink(path)));
         }
 
-        let symlink = Symlink::new(&config.paths.root_path, path)?;
-        let database = Database::new(&config.paths.database_path)?;
+        let symlink = Symlink::new(&config.paths.root, path)?;
+        let database = Database::new(&config.paths.database)?;
         database.import(&symlink)?;
 
         println!("imported {}", symlink.path().display());
