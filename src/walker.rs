@@ -1,5 +1,5 @@
 use std::io::Error as io_Error;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 use walkdir::WalkDir;
 
@@ -17,9 +17,12 @@ pub enum WalkerError {
     Symlink(#[from] SymlinkError),
 }
 
+pub type SkipPredicate = dyn Fn(&Path, bool) -> bool;
+
 pub struct Walker {
     root: PathBuf,
     subroot: PathBuf,
+    skip: Option<Box<SkipPredicate>>,
 }
 
 impl Walker {
@@ -38,7 +41,16 @@ impl Walker {
             return Err(WalkerError::RootIsNotADir(subroot));
         }
 
-        Ok(Self { root, subroot })
+        Ok(Self {
+            root,
+            subroot,
+            skip: None,
+        })
+    }
+
+    pub fn with_skip(mut self, skip: impl Fn(&Path, bool) -> bool + 'static) -> Self {
+        self.skip = Some(Box::new(skip));
+        self
     }
 
     pub fn root(&self) -> &std::path::Path {
@@ -60,7 +72,23 @@ impl Walker {
     ) -> Result<Vec<Symlink>, WalkerError> {
         let mut symlinks = Vec::new();
 
-        for entry in WalkDir::new(&self.subroot) {
+        let walker = WalkDir::new(&self.subroot)
+            .into_iter()
+            .filter_entry(|entry| {
+                if entry.depth() == 0 {
+                    return true;
+                }
+                let rel = entry
+                    .path()
+                    .strip_prefix(&self.root)
+                    .unwrap_or(entry.path());
+                match &self.skip {
+                    Some(skip) => !skip(rel, entry.file_type().is_dir()),
+                    None => true,
+                }
+            });
+
+        for entry in walker {
             match entry {
                 Ok(entry) if entry.path_is_symlink() => {
                     let path = entry.path().to_path_buf();
@@ -169,5 +197,29 @@ mod tests {
         let walker = Walker::new(root, None).unwrap();
         let found = walker.search_symlinks().unwrap();
         assert!(found.is_empty());
+    }
+
+    #[test]
+    fn skip_predicate_excludes_matching_entries() {
+        let dir = TestDir::new();
+        let root = dir.path.join("root");
+        let venv = root.join(".venv");
+        let modules = root.join("node_modules");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&venv).unwrap();
+        fs::create_dir_all(&modules).unwrap();
+        let target = root.join("target.txt");
+        File::create(&target).unwrap();
+
+        symlink(&target, root.join("good_link")).unwrap();
+        symlink(&target, venv.join("venv_link")).unwrap();
+        symlink(&target, modules.join("mod_link")).unwrap();
+
+        let walker = Walker::new(root, None).unwrap().with_skip(|rel, is_dir| {
+            is_dir && (rel.ends_with(".venv") || rel.ends_with("node_modules"))
+        });
+        let found = walker.search_symlinks().unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].path(), PathBuf::from("good_link"));
     }
 }

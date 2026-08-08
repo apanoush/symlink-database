@@ -75,7 +75,8 @@ impl Cli {
     fn sync(&self, subroot: Option<PathBuf>) -> Result<(), CliError> {
         let config = Config::from_config_file()?;
 
-        let walker = Walker::new(config.paths.root.clone(), subroot)?;
+        let walker = Walker::new(config.paths.root.clone(), subroot)?
+            .with_skip(move |rel, is_dir| config.skip.matches(rel, is_dir));
 
         let scan_pb = ProgressBar::new_spinner();
         scan_pb.set_style(
