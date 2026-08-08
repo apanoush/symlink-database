@@ -28,6 +28,11 @@ pub struct Config {
 }
 
 #[derive(Deserialize)]
+struct TOMLConfig {
+    paths: TOMLPaths,
+}
+
+#[derive(Deserialize)]
 pub struct TOMLPaths {
     root: String,
     database: String,
@@ -51,12 +56,12 @@ impl Config {
             ));
         }
 
-        let tp: TOMLPaths = {
+        let tc: TOMLConfig = {
             let conf_str = fs::read_to_string(proj_dirs)?;
-            toml::from_str::<TOMLPaths>(&conf_str)?
+            toml::from_str::<TOMLConfig>(&conf_str)?
         };
 
-        let paths = Paths::default(tp)?;
+        let paths = Paths::default(tc.paths)?;
 
         Ok(Self { paths })
     }

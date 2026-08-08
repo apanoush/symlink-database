@@ -34,6 +34,11 @@ pub enum Commands {
         /// Path to the symlink to import
         path: PathBuf,
     },
+    /// Show all symlinks in the database that point to the given target
+    Find {
+        /// Target path that symlinks point to
+        target: PathBuf,
+    },
 }
 
 #[derive(Error, Debug)]
@@ -55,6 +60,7 @@ impl Cli {
         match &self.command {
             Commands::Sync { subroot } => self.sync(subroot.clone()),
             Commands::Import { path } => self.import(path.clone()),
+            Commands::Find { target } => self.find(target.clone()),
         }
     }
 
@@ -91,6 +97,23 @@ impl Cli {
         database.import(&symlink)?;
 
         println!("imported {}", symlink.path().display());
+        Ok(())
+    }
+
+    fn find(&self, target: PathBuf) -> Result<(), CliError> {
+        let config = Config::from_config_file()?;
+
+        let database = Database::new(&config.paths.database)?;
+        let records = database.find_by_target(&target)?;
+
+        if records.is_empty() {
+            println!("no symlinks found for target {}", target.display());
+        } else {
+            for rec in records {
+                let broken = if rec.broken { " (broken)" } else { "" };
+                println!("{}{}", rec.path.display(), broken);
+            }
+        }
         Ok(())
     }
 }
