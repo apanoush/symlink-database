@@ -13,6 +13,13 @@ use crate::database::{Database, ImportResult};
 use crate::symlink::{Symlink, SymlinkError, normalize};
 use crate::walker::{Walker, WalkerError};
 
+const BOLD: &str = "\x1b[1m";
+const RESET: &str = "\x1b[0m";
+
+fn bold(n: usize) -> String {
+    format!("{BOLD}{n}{RESET}")
+}
+
 #[derive(Parser)]
 #[command(
     name = "lndb",
@@ -89,7 +96,7 @@ impl Cli {
                 scan_pb.set_message(format!("{n} entries"));
                 scan_pb.inc(1);
             },
-            |err| scan_pb.println(format!("error: {err}")),
+            |err| scan_pb.println(format!("Warning: {err}")),
         )?;
         scan_pb.finish_and_clear();
 
@@ -109,12 +116,12 @@ impl Cli {
         let deleted = database.remove_missing(&found, scope)?;
 
         println!(
-            "imported {} symlinks ({} new, {} updated), {} unchanged, removed {} stale entries",
-            summary.inserted + summary.updated,
-            summary.inserted,
-            summary.updated,
-            summary.unchanged,
-            deleted
+            "Imported {} symlinks ({} new, {} updated), {} unchanged, removed {} stale entries",
+            bold(summary.inserted + summary.updated),
+            bold(summary.inserted),
+            bold(summary.updated),
+            bold(summary.unchanged),
+            bold(deleted)
         );
         Ok(())
     }
@@ -136,7 +143,7 @@ impl Cli {
             ImportResult::Updated => "updated",
             ImportResult::Unchanged => "unchanged",
         };
-        println!("imported {} ({status})", symlink.path().display());
+        println!("Imported {} ({status})", symlink.path().display());
         Ok(())
     }
 
