@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 use std::env::VarError;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use clap::{Parser, Subcommand};
@@ -77,6 +79,15 @@ pub enum Commands {
         #[arg(long)]
         absolute: bool,
     },
+    /// List all symlink paths in the database (paged with less)
+    List {
+        /// Only show broken symlinks
+        #[arg(long)]
+        broken: bool,
+        /// Print absolute paths instead of relative ones
+        #[arg(long)]
+        absolute: bool,
+    },
 }
 
 #[derive(Error, Debug)]
@@ -101,6 +112,7 @@ impl Cli {
             Commands::Sync { subroot } => self.sync(subroot.clone()),
             Commands::Import { path } => self.import(path.clone()),
             Commands::Find { target, absolute } => self.find(target.clone(), *absolute),
+            Commands::List { broken, absolute } => self.list(*broken, *absolute),
         }
     }
 
@@ -196,6 +208,40 @@ impl Cli {
                 let broken = if rec.broken { " (broken)" } else { "" };
                 println!("{}{}", path.display(), broken);
             }
+        }
+        Ok(())
+    }
+
+    fn list(&self, broken: bool, absolute: bool) -> Result<(), CliError> {
+        let config = Config::from_config_file()?;
+        let database = Database::new(&config.paths.database)?;
+        let records = database.all()?;
+
+        let tmp = std::env::temp_dir().join(format!("lndb_list_{}.txt", std::process::id()));
+        {
+            let mut file = fs::File::create(&tmp)?;
+            for rec in records {
+                if broken && !rec.broken {
+                    continue;
+                }
+                let path = if absolute {
+                    config.paths.root.join(&rec.path)
+                } else {
+                    rec.path
+                };
+                let marker = if !broken && rec.broken {
+                    " (broken)"
+                } else {
+                    ""
+                };
+                writeln!(file, "{}{}", path.display(), marker)?;
+            }
+        }
+
+        let status = Command::new("less").arg(&tmp).status()?;
+        fs::remove_file(&tmp)?;
+        if !status.success() {
+            return Err(std::io::Error::other(format!("less exited with status {status}")).into());
         }
         Ok(())
     }

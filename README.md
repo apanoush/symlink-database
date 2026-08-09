@@ -48,6 +48,12 @@ lndb find <TARGET> [--absolute]
 
 Lists every symlink in the database whose target matches `TARGET`. The target can be given as an absolute path, an expanded `$VAR`/`~` expression, or relative to the current directory (e.g. `lndb find '$VAR/notes/note.md'`). By default paths are printed relative to `root`; `--absolute` prints absolute paths. Broken symlinks are marked `(broken)`.
 
+```
+lndb list [--broken] [--absolute]
+```
+
+Pages every symlink path in the database with `less`. `--broken` restricts the list to broken links; `--absolute` prints absolute paths instead of relative ones. In the full list, broken links are marked `(broken)`.
+
 ## Storage
 
 The database stores one row per symlink:
