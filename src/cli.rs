@@ -21,8 +21,18 @@ fn bold(n: usize) -> String {
 }
 
 /// Strip `root` from an absolute `target`; if not under root, keep as-is.
+/// Falls back to canonicalizing both when the lexical spelling differs
+/// (e.g. `root` reached through a symlink), since DB targets are root-relative.
 pub fn relativize(target: &Path, root: &Path) -> PathBuf {
-    normalize(target.strip_prefix(root).unwrap_or(target))
+    if let Ok(rel) = target.strip_prefix(root) {
+        return normalize(rel);
+    }
+    if let (Ok(can_root), Ok(can_target)) = (fs::canonicalize(root), fs::canonicalize(target))
+        && let Ok(rel) = can_target.strip_prefix(&can_root)
+    {
+        return normalize(rel);
+    }
+    normalize(target)
 }
 
 /// Make `target` absolute (relative → CWD), then relativize against `root`.
@@ -224,5 +234,25 @@ mod tests {
             resolve_target(&target, root).unwrap(),
             PathBuf::from("docs/x.epub")
         );
+    }
+
+    #[test]
+    fn relativize_handles_symlinked_root() {
+        let dir = std::env::temp_dir().join(format!("lndb_relativize_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let real = dir.join("real");
+        fs::create_dir_all(real.join("docs").join("books")).unwrap();
+        let file = real.join("docs").join("books").join("x.epub");
+        fs::write(&file, "").unwrap();
+        let link = dir.join("root");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let target = fs::canonicalize(&file).unwrap();
+        assert_eq!(
+            relativize(&target, &link),
+            PathBuf::from("docs/books/x.epub")
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
