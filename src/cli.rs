@@ -75,7 +75,7 @@ impl Cli {
     fn sync(&self, subroot: Option<PathBuf>) -> Result<(), CliError> {
         let config = Config::from_config_file()?;
 
-        let walker = Walker::new(config.paths.root.clone(), subroot)?
+        let walker = Walker::new(config.paths.root.clone(), subroot.clone())?
             .with_skip(move |rel, is_dir| config.skip.matches(rel, is_dir));
 
         let scan_pb = ProgressBar::new_spinner();
@@ -103,7 +103,10 @@ impl Cli {
         import_pb.finish_and_clear();
 
         let found: HashSet<PathBuf> = symlinks.iter().map(|sl| sl.path().to_path_buf()).collect();
-        let deleted = database.remove_missing(&found)?;
+        let scope = subroot
+            .as_deref()
+            .and_then(|s| s.strip_prefix(&config.paths.root).ok());
+        let deleted = database.remove_missing(&found, scope)?;
 
         println!(
             "imported {} symlinks, removed {} stale entries",

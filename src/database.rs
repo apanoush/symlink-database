@@ -122,23 +122,37 @@ impl Database {
         Ok(())
     }
 
-    pub fn remove_missing(&self, found: &HashSet<PathBuf>) -> Result<usize, DatabaseError> {
+    pub fn remove_missing(
+        &self,
+        found: &HashSet<PathBuf>,
+        scope: Option<&Path>,
+    ) -> Result<usize, DatabaseError> {
         let found_str: HashSet<String> = found
             .iter()
             .map(|p| p.to_string_lossy().into_owned())
             .collect();
         let all = self.all()?;
-        let mut deleted = 0;
-        for rec in all {
-            if !found_str.contains(&rec.path.to_string_lossy().into_owned()) {
-                self.conn.execute(
-                    "DELETE FROM symlinks WHERE path = ?1",
-                    params![rec.path.to_string_lossy()],
-                )?;
-                deleted += 1;
-            }
+        let stale: Vec<String> = all
+            .iter()
+            .filter(|rec| {
+                let in_scope = scope.is_none_or(|s| rec.path.starts_with(s));
+                in_scope && !found_str.contains(&rec.path.to_string_lossy().into_owned())
+            })
+            .map(|rec| rec.path.to_string_lossy().into_owned())
+            .collect();
+
+        if stale.is_empty() {
+            return Ok(0);
         }
-        Ok(deleted)
+
+        let tx = self.conn.unchecked_transaction()?;
+        for chunk in stale.chunks(500) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql = format!("DELETE FROM symlinks WHERE path IN ({placeholders})");
+            tx.execute(&sql, rusqlite::params_from_iter(chunk))?;
+        }
+        tx.commit()?;
+        Ok(stale.len())
     }
 
     pub fn find_by_target(&self, target: &Path) -> Result<Vec<Record>, DatabaseError> {
@@ -273,10 +287,25 @@ mod tests {
 
         let mut found = HashSet::new();
         found.insert(sl1.path().to_path_buf());
-        let deleted = t.db.remove_missing(&found).unwrap();
+        let deleted = t.db.remove_missing(&found, None).unwrap();
         assert_eq!(deleted, 1);
         assert!(t.db.find_by_path(sl2.path()).unwrap().is_none());
         assert!(t.db.find_by_path(sl1.path()).unwrap().is_some());
+    }
+
+    #[test]
+    fn remove_missing_respects_scope() {
+        let t = TestDb::new();
+        let sl1 = t.symlink("a", false);
+        let sl2 = t.symlink("b", false);
+        t.db.import(&sl1).unwrap();
+        t.db.import(&sl2).unwrap();
+
+        let found = HashSet::new();
+        let deleted = t.db.remove_missing(&found, Some(Path::new("a"))).unwrap();
+        assert_eq!(deleted, 1);
+        assert!(t.db.find_by_path(sl1.path()).unwrap().is_none());
+        assert!(t.db.find_by_path(sl2.path()).unwrap().is_some());
     }
 
     #[test]
