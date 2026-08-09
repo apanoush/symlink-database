@@ -35,6 +35,13 @@ pub enum ImportResult {
     Unchanged,
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ImportSummary {
+    pub inserted: usize,
+    pub updated: usize,
+    pub unchanged: usize,
+}
+
 impl Database {
     pub fn new(path: &Path) -> Result<Self, DatabaseError> {
         if let Some(parent) = path.parent() {
@@ -85,7 +92,7 @@ impl Database {
         })
     }
 
-    pub fn import_many(&self, symlinks: &[Symlink]) -> Result<(), DatabaseError> {
+    pub fn import_many(&self, symlinks: &[Symlink]) -> Result<ImportSummary, DatabaseError> {
         self.import_many_with(symlinks, || {})
     }
 
@@ -93,20 +100,29 @@ impl Database {
         &self,
         symlinks: &[Symlink],
         mut on_import: impl FnMut(),
-    ) -> Result<(), DatabaseError> {
+    ) -> Result<ImportSummary, DatabaseError> {
+        let mut summary = ImportSummary::default();
+
+        let existing: HashSet<String> = self
+            .conn
+            .prepare("SELECT path FROM symlinks")?
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<_>>()?;
+
         let tx = self.conn.unchecked_transaction()?;
         let mut stmt = tx.prepare(
             "INSERT INTO symlinks (path, target, broken, added_at)
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(path) DO UPDATE SET
                  target = excluded.target,
-                 broken = excluded.broken",
+                 broken = excluded.broken
+             WHERE target IS NOT excluded.target OR broken IS NOT excluded.broken",
         )?;
         for symlink in symlinks {
             let path = symlink.path().to_string_lossy();
             let target = symlink.target().to_string_lossy();
             let broken = symlink.broken() as i64;
-            stmt.execute(params![
+            let changed = stmt.execute(params![
                 path,
                 target,
                 broken,
@@ -115,11 +131,20 @@ impl Database {
                     .unwrap_or_default()
                     .as_secs() as i64
             ])?;
+            if existing.contains(path.as_ref()) {
+                if changed > 0 {
+                    summary.updated += 1;
+                } else {
+                    summary.unchanged += 1;
+                }
+            } else {
+                summary.inserted += 1;
+            }
             on_import();
         }
         drop(stmt);
         tx.commit()?;
-        Ok(())
+        Ok(summary)
     }
 
     pub fn remove_missing(
@@ -251,6 +276,60 @@ mod tests {
         assert_eq!(rec.target, sl.target());
         assert!(!rec.broken);
         assert!(rec.added_at > 0);
+    }
+
+    #[test]
+    fn import_many_reports_insert_updated_unchanged() {
+        let t = TestDb::new();
+        t.symlink("a", false);
+        t.symlink("b", false);
+        let root = t._dir.join("root");
+
+        let first =
+            t.db.import_many(&[
+                Symlink::new(&root, root.join("a")).unwrap(),
+                Symlink::new(&root, root.join("b")).unwrap(),
+            ])
+            .unwrap();
+        assert_eq!(
+            first,
+            ImportSummary {
+                inserted: 2,
+                updated: 0,
+                unchanged: 0
+            }
+        );
+
+        let second =
+            t.db.import_many(&[
+                Symlink::new(&root, root.join("a")).unwrap(),
+                Symlink::new(&root, root.join("b")).unwrap(),
+            ])
+            .unwrap();
+        assert_eq!(
+            second,
+            ImportSummary {
+                inserted: 0,
+                updated: 0,
+                unchanged: 2
+            }
+        );
+
+        fs::remove_file(root.join("a_target")).unwrap();
+        let third =
+            t.db.import_many(&[
+                Symlink::new(&root, root.join("a")).unwrap(),
+                Symlink::new(&root, root.join("b")).unwrap(),
+            ])
+            .unwrap();
+        assert_eq!(
+            third,
+            ImportSummary {
+                inserted: 0,
+                updated: 1,
+                unchanged: 1
+            }
+        );
     }
 
     #[test]

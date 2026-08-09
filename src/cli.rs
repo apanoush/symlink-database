@@ -9,7 +9,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use thiserror::Error;
 
 use crate::config::Config;
-use crate::database::Database;
+use crate::database::{Database, ImportResult};
 use crate::symlink::{Symlink, SymlinkError, normalize};
 use crate::walker::{Walker, WalkerError};
 
@@ -99,7 +99,7 @@ impl Cli {
         import_pb.set_style(
             ProgressStyle::with_template("{bar:40} {pos}/{len} importing").expect("valid template"),
         );
-        database.import_many_with(&symlinks, || import_pb.inc(1))?;
+        let summary = database.import_many_with(&symlinks, || import_pb.inc(1))?;
         import_pb.finish_and_clear();
 
         let found: HashSet<PathBuf> = symlinks.iter().map(|sl| sl.path().to_path_buf()).collect();
@@ -109,8 +109,11 @@ impl Cli {
         let deleted = database.remove_missing(&found, scope)?;
 
         println!(
-            "imported {} symlinks, removed {} stale entries",
-            symlinks.len(),
+            "imported {} symlinks ({} new, {} updated), {} unchanged, removed {} stale entries",
+            summary.inserted + summary.updated,
+            summary.inserted,
+            summary.updated,
+            summary.unchanged,
             deleted
         );
         Ok(())
@@ -126,9 +129,14 @@ impl Cli {
 
         let symlink = Symlink::new(&config.paths.root, path)?;
         let database = Database::new(&config.paths.database)?;
-        database.import(&symlink)?;
+        let result = database.import(&symlink)?;
 
-        println!("imported {}", symlink.path().display());
+        let status = match result {
+            ImportResult::Inserted => "new",
+            ImportResult::Updated => "updated",
+            ImportResult::Unchanged => "unchanged",
+        };
+        println!("imported {} ({status})", symlink.path().display());
         Ok(())
     }
 
