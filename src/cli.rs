@@ -10,7 +10,7 @@ use thiserror::Error;
 
 use crate::config::Config;
 use crate::database::Database;
-use crate::symlink::{Symlink, SymlinkError};
+use crate::symlink::{Symlink, SymlinkError, normalize};
 use crate::walker::{Walker, WalkerError};
 
 #[derive(Parser)]
@@ -141,6 +141,7 @@ impl Cli {
             .strip_prefix(&config.paths.root)
             .unwrap_or(&target)
             .to_path_buf();
+        let target = normalize(&target);
 
         let database = Database::new(&config.paths.database)?;
         let records = database.find_by_target(&target)?;

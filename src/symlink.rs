@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -26,6 +26,20 @@ pub struct Symlink {
     broken: bool,
 }
 
+pub fn normalize(path: &Path) -> PathBuf {
+    let mut result = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                result.pop();
+            }
+            c => result.push(c.as_os_str()),
+        }
+    }
+    result
+}
+
 impl Symlink {
     pub fn new(root: &Path, path: PathBuf) -> Result<Self, SymlinkError> {
         let metadata =
@@ -43,6 +57,7 @@ impl Symlink {
             path.parent()
                 .map_or_else(|| target.clone(), |parent| parent.join(&target))
         };
+        let resolved = normalize(&resolved);
 
         let canonical_root =
             fs::canonicalize(root).map_err(|_| SymlinkError::DoNotExist(root.to_path_buf()))?;
@@ -58,13 +73,14 @@ impl Symlink {
 
         let broken = !resolved.exists();
 
-        let rel_path = path
-            .strip_prefix(root)
-            .map_err(|_| SymlinkError::PathOutsideRoot {
-                path: path.clone(),
-                root: root.to_path_buf(),
-            })?
-            .to_path_buf();
+        let rel_path =
+            normalize(
+                path.strip_prefix(root)
+                    .map_err(|_| SymlinkError::PathOutsideRoot {
+                        path: path.clone(),
+                        root: root.to_path_buf(),
+                    })?,
+            );
         let rel_target = resolved
             .strip_prefix(root)
             .map_err(|_| SymlinkError::TargetOutsideRoot {
@@ -171,6 +187,31 @@ mod tests {
         assert!(!sl.broken());
         assert_eq!(sl.path(), Path::new("link"));
         assert_eq!(sl.target(), Path::new("sub/target"));
+    }
+
+    #[test]
+    fn parent_dir_in_target_is_normalized() {
+        let dir = TestDir::new();
+        let root = dir.path.clone();
+        let sub = root.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        let target = root.join("target");
+        File::create(&target).unwrap();
+        let link = sub.join("link");
+        symlink(Path::new("../target"), &link).unwrap();
+
+        let sl = Symlink::new(&root, link.clone()).unwrap();
+        assert!(!sl.broken());
+        assert_eq!(sl.path(), Path::new("sub/link"));
+        assert_eq!(sl.target(), Path::new("target"));
+    }
+
+    #[test]
+    fn normalize_removes_cur_and_parent_dir_components() {
+        let path = Path::new("/root/sub/.././target");
+        assert_eq!(normalize(path), PathBuf::from("/root/target"));
+        assert_eq!(normalize(Path::new("./link")), PathBuf::from("link"));
+        assert_eq!(normalize(Path::new("/root/..")), PathBuf::from("/"));
     }
 
     #[test]
