@@ -95,28 +95,29 @@ impl Database {
         mut on_import: impl FnMut(),
     ) -> Result<(), DatabaseError> {
         let tx = self.conn.unchecked_transaction()?;
+        let mut stmt = tx.prepare(
+            "INSERT INTO symlinks (path, target, broken, added_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(path) DO UPDATE SET
+                 target = excluded.target,
+                 broken = excluded.broken",
+        )?;
         for symlink in symlinks {
             let path = symlink.path().to_string_lossy();
             let target = symlink.target().to_string_lossy();
             let broken = symlink.broken() as i64;
-            tx.execute(
-                "INSERT INTO symlinks (path, target, broken, added_at)
-                 VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(path) DO UPDATE SET
-                     target = excluded.target,
-                     broken = excluded.broken",
-                params![
-                    path,
-                    target,
-                    broken,
-                    SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs() as i64
-                ],
-            )?;
+            stmt.execute(params![
+                path,
+                target,
+                broken,
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64
+            ])?;
             on_import();
         }
+        drop(stmt);
         tx.commit()?;
         Ok(())
     }
