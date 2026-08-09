@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::env::VarError;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use clap::{Parser, Subcommand};
@@ -18,6 +18,21 @@ const RESET: &str = "\x1b[0m";
 
 fn bold(n: usize) -> String {
     format!("{BOLD}{n}{RESET}")
+}
+
+/// Strip `root` from an absolute `target`; if not under root, keep as-is.
+pub fn relativize(target: &Path, root: &Path) -> PathBuf {
+    normalize(target.strip_prefix(root).unwrap_or(target))
+}
+
+/// Make `target` absolute (relative → CWD), then relativize against `root`.
+pub fn resolve_target(target: &Path, root: &Path) -> Result<PathBuf, std::io::Error> {
+    let target = if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(target)
+    };
+    Ok(relativize(&target, root))
 }
 
 #[derive(Parser)]
@@ -46,7 +61,7 @@ pub enum Commands {
     },
     /// Show all symlinks in the database that point to the given target
     Find {
-        /// Target path that symlinks point to (relative to root, or absolute)
+        /// Target path that symlinks point to (absolute, $VAR/~, or relative to the current directory)
         target: PathBuf,
         /// Print absolute paths instead of relative ones
         #[arg(long)]
@@ -154,12 +169,7 @@ impl Cli {
         let expanded = shellexpand::env(&binding)?;
         let expanded = shellexpand::tilde(&expanded);
         let target = PathBuf::from(expanded.as_ref());
-
-        let target = target
-            .strip_prefix(&config.paths.root)
-            .unwrap_or(&target)
-            .to_path_buf();
-        let target = normalize(&target);
+        let target = resolve_target(&target, &config.paths.root)?;
 
         let database = Database::new(&config.paths.database)?;
         let records = database.find_by_target(&target)?;
@@ -178,5 +188,41 @@ impl Cli {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relativize_in_root_strips_root() {
+        let root = Path::new("/data");
+        let target = Path::new("/data/docs/books/x.epub");
+        assert_eq!(relativize(target, root), PathBuf::from("docs/books/x.epub"));
+    }
+
+    #[test]
+    fn relativize_outside_root_keeps_absolute() {
+        let root = Path::new("/data");
+        let target = Path::new("/home/user/x.epub");
+        assert_eq!(relativize(target, root), target.to_path_buf());
+    }
+
+    #[test]
+    fn relativize_normalizes_components() {
+        let root = Path::new("/data");
+        let target = Path::new("/data/books/../docs/x.epub");
+        assert_eq!(relativize(target, root), PathBuf::from("docs/x.epub"));
+    }
+
+    #[test]
+    fn resolve_target_absolute_relativizes() {
+        let root = Path::new("/data");
+        let target = PathBuf::from("/data/docs/x.epub");
+        assert_eq!(
+            resolve_target(&target, root).unwrap(),
+            PathBuf::from("docs/x.epub")
+        );
     }
 }
