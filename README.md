@@ -89,7 +89,7 @@ src/database.rs rusqlite persistence: schema, import/upsert, pruning, queries
 Data flow for `sync`:
 
 1. `cli::sync` loads `Config` (paths + skip matcher) from `config.rs`.
-2. `walker::Walker` traverses the filesystem, pruning directories that match the skip patterns (`filter_entry`), and produces `Symlink` items.
+2. `walker::Walker` traverses the filesystem, pruning directories that match the skip patterns (`filter_entry`), and produces `Symlink` items. The traversal itself is sequential (needed for pruning), but entry processing (`Symlink` construction, which does the filesystem `canonicalize` calls) is parallelized across a `rayon` thread pool (`par_bridge`).
 3. `symlink::Symlink` validates each link: it must be a symlink, its resolved target must stay inside `root` (else the link is skipped and an error is reported), and it computes the `broken` flag by resolving relative targets against the symlink's parent directory. Stored `path` and `target` are normalized (`.`/`..` components removed).
 4. `database::Database` upserts all found symlinks in a transaction, then `remove_missing` deletes rows whose path was not found in the scan (batched `DELETE ... WHERE path IN (...)` queries inside a single transaction; scoped to the scanned subtree when `--subroot` is used).
 

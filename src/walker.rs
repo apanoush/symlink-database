@@ -1,8 +1,11 @@
 use std::fs;
 use std::io::Error as io_Error;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use walkdir::WalkDir;
+
+use rayon::prelude::*;
 
 use crate::symlink::{Symlink, SymlinkError};
 
@@ -18,7 +21,7 @@ pub enum WalkerError {
     Symlink(#[from] SymlinkError),
 }
 
-pub type SkipPredicate = dyn Fn(&Path, bool) -> bool;
+pub type SkipPredicate = dyn Fn(&Path, bool) -> bool + Send + Sync;
 
 pub struct Walker {
     root: PathBuf,
@@ -49,7 +52,7 @@ impl Walker {
         })
     }
 
-    pub fn with_skip(mut self, skip: impl Fn(&Path, bool) -> bool + 'static) -> Self {
+    pub fn with_skip(mut self, skip: impl Fn(&Path, bool) -> bool + Send + Sync + 'static) -> Self {
         self.skip = Some(Box::new(skip));
         self
     }
@@ -68,11 +71,9 @@ impl Walker {
 
     pub fn search_symlinks_with(
         &self,
-        mut on_entry: impl FnMut(),
-        mut on_error: impl FnMut(&str),
+        on_entry: impl FnMut() + Send,
+        on_error: impl FnMut(&str) + Send,
     ) -> Result<Vec<Symlink>, WalkerError> {
-        let mut symlinks = Vec::new();
-
         let canonical_root = fs::canonicalize(&self.root)?;
 
         let walker = WalkDir::new(&self.subroot)
@@ -91,20 +92,37 @@ impl Walker {
                 }
             });
 
-        for entry in walker {
-            match entry {
-                Ok(entry) if entry.depth() > 0 && entry.path_is_symlink() => {
-                    let path = entry.path().to_path_buf();
-                    match Symlink::new_with_canonical_root(&self.root, &canonical_root, path) {
-                        Ok(symlink) => symlinks.push(symlink),
-                        Err(e) => on_error(&e.to_string()),
+        let on_entry = Arc::new(Mutex::new(on_entry));
+        let on_error = Arc::new(Mutex::new(on_error));
+        let root = self.root.clone();
+
+        let symlinks: Vec<Symlink> = walker
+            .par_bridge()
+            .filter_map(|entry| {
+                let result = match entry {
+                    Ok(entry) if entry.depth() > 0 && entry.path_is_symlink() => {
+                        let path = entry.path().to_path_buf();
+                        match Symlink::new_with_canonical_root(&root, &canonical_root, path) {
+                            Ok(symlink) => Some(symlink),
+                            Err(e) => {
+                                let mut g = on_error.lock().unwrap_or_else(|e| e.into_inner());
+                                g(&e.to_string());
+                                None
+                            }
+                        }
                     }
-                }
-                Ok(_) => {}
-                Err(e) => on_error(&e.to_string()),
-            }
-            on_entry();
-        }
+                    Ok(_) => None,
+                    Err(e) => {
+                        let mut g = on_error.lock().unwrap_or_else(|e| e.into_inner());
+                        g(&e.to_string());
+                        None
+                    }
+                };
+                let mut g = on_entry.lock().unwrap_or_else(|e| e.into_inner());
+                g();
+                result
+            })
+            .collect();
 
         Ok(symlinks)
     }
@@ -242,5 +260,30 @@ mod tests {
         let found = walker.search_symlinks().unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].path(), PathBuf::from("l"));
+    }
+
+    #[test]
+    fn parallel_search_finds_all_symlinks() {
+        let dir = TestDir::new();
+        let root = dir.path.join("root");
+        fs::create_dir_all(root.join("a")).unwrap();
+        fs::create_dir_all(root.join("b")).unwrap();
+        let target = root.join("t.txt");
+        File::create(&target).unwrap();
+        symlink(&target, root.join("l0")).unwrap();
+        symlink(&target, root.join("a").join("l1")).unwrap();
+        symlink(&target, root.join("b").join("l2")).unwrap();
+
+        let found = Walker::new(root, None).unwrap().search_symlinks().unwrap();
+        let mut paths: Vec<PathBuf> = found.iter().map(|s| s.path().to_path_buf()).collect();
+        paths.sort();
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("a/l1"),
+                PathBuf::from("b/l2"),
+                PathBuf::from("l0")
+            ]
+        );
     }
 }
