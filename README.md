@@ -92,7 +92,8 @@ Data flow for `sync`:
 Key invariants:
 
 - The walker never descends into a skipped directory (`walkdir::filter_entry` calls `skip_current_dir`), so skipped subtrees are not scanned at all.
-- `Symlink` stores `path` and `target` relative to `root`; containment and broken-status are computed against the absolute, resolved paths before relativization.
+- `Symlink` stores `path` and `target` relative to `root`; containment and broken-status are computed against the absolute, resolved paths before relativization. Containment uses canonicalized paths, so a `root` that is itself a symlink (or a link target written in a different spelling) is handled correctly.
+- The walker never records the root entry itself, even when `root` is a symlink.
 - Scan errors are non-fatal: a single bad symlink is reported on stderr and iteration continues.
 - The database is derived state — it can be dropped and rebuilt from the filesystem with a single `sync`.
 

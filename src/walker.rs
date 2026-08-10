@@ -90,7 +90,7 @@ impl Walker {
 
         for entry in walker {
             match entry {
-                Ok(entry) if entry.path_is_symlink() => {
+                Ok(entry) if entry.depth() > 0 && entry.path_is_symlink() => {
                     let path = entry.path().to_path_buf();
                     match Symlink::new(&self.root, path) {
                         Ok(symlink) => symlinks.push(symlink),
@@ -221,5 +221,23 @@ mod tests {
         let found = walker.search_symlinks().unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].path(), PathBuf::from("good_link"));
+    }
+
+    #[test]
+    fn symlinked_root_is_not_recorded() {
+        let dir = TestDir::new();
+        let real = dir.path.join("real");
+        let root = dir.path.join("root");
+        fs::create_dir_all(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &root).unwrap();
+
+        let target = real.join("t.txt");
+        File::create(&target).unwrap();
+        symlink(&target, real.join("l")).unwrap();
+
+        let walker = Walker::new(root, None).unwrap();
+        let found = walker.search_symlinks().unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].path(), PathBuf::from("l"));
     }
 }

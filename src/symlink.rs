@@ -61,7 +61,15 @@ impl Symlink {
 
         let canonical_root =
             fs::canonicalize(root).map_err(|_| SymlinkError::DoNotExist(root.to_path_buf()))?;
-        let canonical_target = fs::canonicalize(&resolved).unwrap_or_else(|_| resolved.clone());
+        let canonical_target = fs::canonicalize(&resolved).unwrap_or_else(|_| {
+            resolved
+                .parent()
+                .and_then(|p| fs::canonicalize(p).ok())
+                .map_or_else(
+                    || resolved.clone(),
+                    |p| p.join(resolved.file_name().unwrap_or_default()),
+                )
+        });
 
         if !canonical_target.starts_with(&canonical_root) {
             return Err(SymlinkError::TargetOutsideRoot {
@@ -83,11 +91,11 @@ impl Symlink {
             );
         let rel_target = resolved
             .strip_prefix(root)
-            .map_err(|_| SymlinkError::TargetOutsideRoot {
-                path: path.clone(),
-                target,
-                root: root.to_path_buf(),
-            })?
+            .unwrap_or_else(|_| {
+                canonical_target
+                    .strip_prefix(&canonical_root)
+                    .unwrap_or(&resolved)
+            })
             .to_path_buf();
 
         Ok(Self {
@@ -187,6 +195,41 @@ mod tests {
         assert!(!sl.broken());
         assert_eq!(sl.path(), Path::new("link"));
         assert_eq!(sl.target(), Path::new("sub/target"));
+    }
+
+    #[test]
+    fn symlinked_root_accepts_broken_symlink_spelling_target() {
+        let dir = TestDir::new();
+        let real = dir.path.join("real");
+        let root = dir.path.join("root");
+        fs::create_dir_all(real.join("sub")).unwrap();
+        std::os::unix::fs::symlink(&real, &root).unwrap();
+
+        let link = root.join("sub").join("link");
+        symlink(root.join("sub").join("missing"), &link).unwrap();
+
+        let sl = Symlink::new(&root, link.clone()).unwrap();
+        assert!(sl.broken());
+        assert_eq!(sl.path(), Path::new("sub/link"));
+        assert_eq!(sl.target(), Path::new("sub/missing"));
+    }
+
+    #[test]
+    fn symlinked_root_accepts_real_spelling_absolute_target() {
+        let dir = TestDir::new();
+        let real = dir.path.join("real");
+        let root = dir.path.join("root");
+        fs::create_dir_all(real.join("ressources")).unwrap();
+        std::os::unix::fs::symlink(&real, &root).unwrap();
+
+        let target = real.join("ressources").join("t.txt");
+        File::create(&target).unwrap();
+        let link = root.join("link");
+        symlink(&target, &link).unwrap();
+
+        let sl = Symlink::new(&root, link.clone()).unwrap();
+        assert!(!sl.broken());
+        assert_eq!(sl.target(), Path::new("ressources/t.txt"));
     }
 
     #[test]
