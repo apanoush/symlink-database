@@ -61,7 +61,9 @@ impl Symlink {
 
         let canonical_root =
             fs::canonicalize(root).map_err(|_| SymlinkError::DoNotExist(root.to_path_buf()))?;
-        let canonical_target = fs::canonicalize(&resolved).unwrap_or_else(|_| {
+        let canonicalize_result = fs::canonicalize(&resolved);
+        let broken = canonicalize_result.is_err();
+        let canonical_target = canonicalize_result.unwrap_or_else(|_| {
             resolved
                 .parent()
                 .and_then(|p| fs::canonicalize(p).ok())
@@ -78,8 +80,6 @@ impl Symlink {
                 root: root.to_path_buf(),
             });
         }
-
-        let broken = !resolved.exists();
 
         let rel_path =
             normalize(

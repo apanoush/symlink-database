@@ -54,6 +54,10 @@ lndb list [--broken] [--absolute]
 
 Pages every symlink path in the database with `less`. `--broken` restricts the list to broken links; `--absolute` prints absolute paths instead of relative ones. In the full list, broken links are marked `(broken)`.
 
+## Known limitations
+
+- A symlink whose target exists but is unreadable (e.g. a path component is permission-restricted) is reported as `broken`, because target existence is checked via `canonicalize`/`stat` and *any* failure counts as broken — the tool does not distinguish `EACCES` from `ENOENT`.
+
 ## Storage
 
 The database stores one row per symlink:
