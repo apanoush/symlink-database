@@ -42,6 +42,16 @@ pub fn normalize(path: &Path) -> PathBuf {
 
 impl Symlink {
     pub fn new(root: &Path, path: PathBuf) -> Result<Self, SymlinkError> {
+        let canonical_root =
+            fs::canonicalize(root).map_err(|_| SymlinkError::DoNotExist(root.to_path_buf()))?;
+        Self::new_with_canonical_root(root, &canonical_root, path)
+    }
+
+    pub(crate) fn new_with_canonical_root(
+        root: &Path,
+        canonical_root: &Path,
+        path: PathBuf,
+    ) -> Result<Self, SymlinkError> {
         let metadata =
             fs::symlink_metadata(&path).map_err(|_| SymlinkError::DoNotExist(path.clone()))?;
 
@@ -59,8 +69,6 @@ impl Symlink {
         };
         let resolved = normalize(&resolved);
 
-        let canonical_root =
-            fs::canonicalize(root).map_err(|_| SymlinkError::DoNotExist(root.to_path_buf()))?;
         let canonicalize_result = fs::canonicalize(&resolved);
         let broken = canonicalize_result.is_err();
         let canonical_target = canonicalize_result.unwrap_or_else(|_| {
@@ -73,7 +81,7 @@ impl Symlink {
                 )
         });
 
-        if !canonical_target.starts_with(&canonical_root) {
+        if !canonical_target.starts_with(canonical_root) {
             return Err(SymlinkError::TargetOutsideRoot {
                 path,
                 target,
@@ -93,7 +101,7 @@ impl Symlink {
             .strip_prefix(root)
             .unwrap_or_else(|_| {
                 canonical_target
-                    .strip_prefix(&canonical_root)
+                    .strip_prefix(canonical_root)
                     .unwrap_or(&resolved)
             })
             .to_path_buf();

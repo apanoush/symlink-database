@@ -1,3 +1,4 @@
+use std::fs;
 use std::io::Error as io_Error;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -72,6 +73,8 @@ impl Walker {
     ) -> Result<Vec<Symlink>, WalkerError> {
         let mut symlinks = Vec::new();
 
+        let canonical_root = fs::canonicalize(&self.root)?;
+
         let walker = WalkDir::new(&self.subroot)
             .into_iter()
             .filter_entry(|entry| {
@@ -92,7 +95,7 @@ impl Walker {
             match entry {
                 Ok(entry) if entry.depth() > 0 && entry.path_is_symlink() => {
                     let path = entry.path().to_path_buf();
-                    match Symlink::new(&self.root, path) {
+                    match Symlink::new_with_canonical_root(&self.root, &canonical_root, path) {
                         Ok(symlink) => symlinks.push(symlink),
                         Err(e) => on_error(&e.to_string()),
                     }
