@@ -12,6 +12,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Bar, BarChart, Block, Cell, Clear, Gauge, Paragraph, Row, Table, Wrap};
+use regex::{Regex, RegexBuilder};
 
 use crate::stats::{Stats, format_epoch};
 
@@ -22,9 +23,9 @@ pub enum Tab {
     Overview,
     /// Files with the most incoming links.
     Files,
-    /// Depth-1 folders by number of symlinks directly inside them.
+    /// Folders by number of symlinks inside them (filterable with `/`).
     Folders,
-    /// Depth-1 target directories by incoming links.
+    /// Target directories by incoming links (filterable with `/`).
     TargetDirs,
     /// Every broken symlink.
     Broken,
@@ -73,6 +74,15 @@ impl Tab {
     }
 }
 
+/// Whether the app is navigating or editing the filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Normal navigation.
+    Normal,
+    /// Editing the `/` filter pattern.
+    Filter,
+}
+
 /// Everything the UI needs: the view model plus navigation state.
 pub struct App {
     /// Aggregated data, recomputed on refresh.
@@ -91,6 +101,19 @@ pub struct App {
     pub show_help: bool,
     /// Set when the user asks to quit.
     pub should_quit: bool,
+    /// Input mode (navigation or filter editing).
+    pub mode: Mode,
+    /// The committed filter, shared by the filterable tabs.
+    pub filter: Option<Regex>,
+    /// The pattern being edited while in [`Mode::Filter`].
+    pub filter_input: String,
+    /// Compile error for the current `filter_input`, if any.
+    pub filter_error: Option<String>,
+}
+
+/// Tabs whose rows can be filtered with `/`.
+fn tab_is_filterable(tab: Tab) -> bool {
+    matches!(tab, Tab::Files | Tab::Folders | Tab::TargetDirs)
 }
 
 impl App {
@@ -105,6 +128,10 @@ impl App {
             scroll: 0,
             show_help: false,
             should_quit: false,
+            mode: Mode::Normal,
+            filter: None,
+            filter_input: String::new(),
+            filter_error: None,
         }
     }
 
@@ -115,13 +142,33 @@ impl App {
         self.clamp_scroll();
     }
 
-    /// Number of scrollable rows in the active tab.
+    /// Whether `text` passes the committed filter (always true when unset).
+    fn matches(&self, text: &str) -> bool {
+        self.filter.as_ref().is_none_or(|re| re.is_match(text))
+    }
+
+    /// Number of rows in the active tab after filtering.
     fn row_count(&self) -> usize {
         match self.tab {
             Tab::Overview => 0,
-            Tab::Files => self.stats.top_targets.len(),
-            Tab::Folders => self.stats.folders.len(),
-            Tab::TargetDirs => self.stats.target_dirs.len(),
+            Tab::Files => self
+                .stats
+                .top_targets
+                .iter()
+                .filter(|item| self.matches(&item.target))
+                .count(),
+            Tab::Folders => self
+                .stats
+                .folders
+                .iter()
+                .filter(|item| self.matches(&item.folder))
+                .count(),
+            Tab::TargetDirs => self
+                .stats
+                .target_dirs
+                .iter()
+                .filter(|item| self.matches(&item.folder))
+                .count(),
             Tab::Broken => self.stats.broken.len(),
             Tab::Distribution => self.stats.links_per_target.len(),
             Tab::Newest => self.stats.newest.len(),
@@ -134,6 +181,91 @@ impl App {
 
     fn clamp_scroll(&mut self) {
         self.scroll = self.scroll.min(self.max_scroll());
+    }
+
+    /// Filter the active tab's rows down to those matching the committed
+    /// pattern. Non-filterable tabs return their rows unchanged.
+    fn visible_top_targets(&self) -> Vec<&crate::stats::TargetStat> {
+        self.stats
+            .top_targets
+            .iter()
+            .filter(|item| self.matches(&item.target))
+            .collect()
+    }
+
+    fn visible_folders(&self) -> Vec<&crate::stats::FolderStat> {
+        self.stats
+            .folders
+            .iter()
+            .filter(|item| self.matches(&item.folder))
+            .collect()
+    }
+
+    fn visible_target_dirs(&self) -> Vec<&crate::stats::FolderStat> {
+        self.stats
+            .target_dirs
+            .iter()
+            .filter(|item| self.matches(&item.folder))
+            .collect()
+    }
+
+    /// Compile `filter_input` (case-insensitive) into the committed filter.
+    ///
+    /// An empty pattern clears the filter. Returns the compile error, if any.
+    fn apply_filter(&mut self) -> Option<String> {
+        if self.filter_input.is_empty() {
+            self.filter = None;
+            self.filter_error = None;
+            self.scroll = 0;
+            return None;
+        }
+        match RegexBuilder::new(&self.filter_input)
+            .case_insensitive(true)
+            .build()
+        {
+            Ok(regex) => {
+                self.filter = Some(regex);
+                self.filter_error = None;
+                self.scroll = 0;
+                None
+            }
+            Err(error) => {
+                self.filter_error = Some(error.to_string());
+                Some(error.to_string())
+            }
+        }
+    }
+
+    /// Number of rows in the active tab matching the current `filter_input`
+    /// (used for the live hint while editing). `None` when the input does not
+    /// compile.
+    fn live_match_count(&self) -> Option<usize> {
+        let regex = RegexBuilder::new(&self.filter_input)
+            .case_insensitive(true)
+            .build()
+            .ok()?;
+        let count = match self.tab {
+            Tab::Files => self
+                .stats
+                .top_targets
+                .iter()
+                .filter(|item| regex.is_match(&item.target))
+                .count(),
+            Tab::Folders => self
+                .stats
+                .folders
+                .iter()
+                .filter(|item| regex.is_match(&item.folder))
+                .count(),
+            Tab::TargetDirs => self
+                .stats
+                .target_dirs
+                .iter()
+                .filter(|item| regex.is_match(&item.folder))
+                .count(),
+            _ => 0,
+        };
+        Some(count)
     }
 }
 
@@ -159,9 +291,45 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         return Action::None;
     }
 
+    if app.mode == Mode::Filter {
+        match key.code {
+            KeyCode::Esc => {
+                app.mode = Mode::Normal;
+                app.filter_input = app
+                    .filter
+                    .as_ref()
+                    .map_or_else(String::new, |re| re.as_str().to_string());
+                app.filter_error = None;
+            }
+            KeyCode::Enter => {
+                if app.apply_filter().is_none() {
+                    app.mode = Mode::Normal;
+                }
+            }
+            KeyCode::Backspace => {
+                app.filter_input.pop();
+                app.filter_error = None;
+            }
+            KeyCode::Char(c) => {
+                app.filter_input.push(c);
+                app.filter_error = None;
+            }
+            _ => {}
+        }
+        return Action::None;
+    }
+
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
         KeyCode::Char('?') => app.show_help = true,
+        KeyCode::Char('/') if tab_is_filterable(app.tab) => {
+            app.mode = Mode::Filter;
+            app.filter_input = app
+                .filter
+                .as_ref()
+                .map_or_else(String::new, |re| re.as_str().to_string());
+            app.filter_error = None;
+        }
         KeyCode::Char('r') => return Action::Refresh,
         KeyCode::Char(']') => {
             app.depth += 1;
@@ -210,7 +378,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_header(frame, app, header);
     draw_tabs(frame, app, tabs);
     draw_body(frame, app, body);
-    draw_footer(frame, footer);
+    draw_footer(frame, app, footer);
 
     if app.show_help {
         draw_help(frame, area);
@@ -278,8 +446,36 @@ fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn draw_footer(frame: &mut Frame, area: Rect) {
-    let line = Line::from(vec![
+fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
+    if app.mode == Mode::Filter {
+        let mut spans = vec![
+            Span::styled(
+                "/ ",
+                Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(app.filter_input.clone()),
+            Span::styled("_", Style::new().fg(Color::Cyan)),
+        ];
+        if let Some(error) = &app.filter_error {
+            spans.push(Span::styled(
+                format!("  {error}"),
+                Style::new().fg(Color::Red),
+            ));
+        } else if let Some(count) = app.live_match_count() {
+            spans.push(Span::styled(
+                format!("  ({count} matches)"),
+                Style::new().fg(Color::DarkGray),
+            ));
+        }
+        spans.push(Span::styled(
+            "  Enter apply  Esc cancel",
+            Style::new().fg(Color::DarkGray),
+        ));
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+        return;
+    }
+
+    let mut spans = vec![
         key_hint("q"),
         Span::raw(" quit  "),
         key_hint("Tab"),
@@ -292,13 +488,21 @@ fn draw_footer(frame: &mut Frame, area: Rect) {
         Span::raw(" scroll  "),
         key_hint("[ ]"),
         Span::raw(" depth  "),
+        key_hint("/"),
+        Span::raw(" filter  "),
         key_hint("?"),
         Span::raw(" help  "),
         key_hint("r"),
         Span::raw(" refresh"),
-    ]);
+    ];
+    if let Some(regex) = &app.filter {
+        spans.push(Span::styled(
+            format!("   filter /{}", regex.as_str()),
+            Style::new().fg(Color::Yellow),
+        ));
+    }
     frame.render_widget(
-        Paragraph::new(line).style(Style::new().fg(Color::DarkGray)),
+        Paragraph::new(Line::from(spans)).style(Style::new().fg(Color::DarkGray)),
         area,
     );
 }
@@ -410,8 +614,8 @@ enum Chart {
 
 fn draw_folder_chart(frame: &mut Frame, app: &App, area: Rect, chart: Chart) {
     let (data, label) = match chart {
-        Chart::Folders => (&app.stats.folders, "folders by symlinks"),
-        Chart::TargetDirs => (&app.stats.target_dirs, "target dirs by links"),
+        Chart::Folders => (app.visible_folders(), "folders by symlinks"),
+        Chart::TargetDirs => (app.visible_target_dirs(), "target dirs by links"),
     };
     let title = format!(" depth-{} {} ", app.depth, label);
     let (start, end) = scroll_range(area, app.scroll, data.len(), 2);
@@ -431,7 +635,7 @@ fn draw_folder_chart(frame: &mut Frame, app: &App, area: Rect, chart: Chart) {
 }
 
 fn draw_files(frame: &mut Frame, app: &App, area: Rect) {
-    let data = &app.stats.top_targets;
+    let data = app.visible_top_targets();
     let (start, end) = scroll_range(area, app.scroll, data.len(), 3);
     let rows = data[start..end]
         .iter()
@@ -548,6 +752,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from("  g / G        scroll to top / bottom"),
         Line::from("  r            refresh from the database"),
         Line::from("  [ / ]        folder grouping depth"),
+        Line::from("  /            filter tabs 2-4 by regex (Enter apply, Esc cancel)"),
         Line::from("  ?            toggle this help"),
         Line::from(""),
         Line::from("Views").style(Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
@@ -820,5 +1025,109 @@ mod tests {
         app.refresh(stats);
         assert_eq!(app.depth, 1);
         assert_eq!(app.scroll, 0);
+    }
+
+    fn type_str(app: &mut App, text: &str) {
+        for c in text.chars() {
+            handle_key(app, KeyEvent::from(KeyCode::Char(c)));
+        }
+    }
+
+    #[test]
+    fn filter_opens_applies_and_clears() {
+        let mut app = App::new(sample_stats(), "/root".into(), "/db".into());
+        app.tab = Tab::Files;
+
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('/')));
+        assert_eq!(app.mode, Mode::Filter);
+        type_str(&mut app, "docs");
+        handle_key(&mut app, KeyEvent::from(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.filter.is_some());
+        assert_eq!(app.row_count(), 1); // only "docs/x"
+
+        // Reopening pre-fills the committed pattern.
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('/')));
+        assert_eq!(app.filter_input, "docs");
+
+        // Emptying and pressing Enter clears the filter.
+        for _ in 0..4 {
+            handle_key(&mut app, KeyEvent::from(KeyCode::Backspace));
+        }
+        handle_key(&mut app, KeyEvent::from(KeyCode::Enter));
+        assert!(app.filter.is_none());
+    }
+
+    #[test]
+    fn filter_is_case_insensitive() {
+        let mut app = App::new(sample_stats(), "/root".into(), "/db".into());
+        app.tab = Tab::Files;
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('/')));
+        type_str(&mut app, "DOCS/X");
+        handle_key(&mut app, KeyEvent::from(KeyCode::Enter));
+        assert_eq!(app.row_count(), 1);
+    }
+
+    #[test]
+    fn filter_esc_cancels_and_keeps_previous() {
+        let mut app = App::new(sample_stats(), "/root".into(), "/db".into());
+        app.tab = Tab::Files;
+        app.filter = Some(Regex::new("docs").unwrap());
+
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('/')));
+        type_str(&mut app, "zzz");
+        handle_key(&mut app, KeyEvent::from(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.filter.as_ref().unwrap().as_str(), "docs");
+        assert_eq!(app.row_count(), 1);
+    }
+
+    #[test]
+    fn invalid_regex_stays_in_editor() {
+        let mut app = App::new(sample_stats(), "/root".into(), "/db".into());
+        app.tab = Tab::Files;
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('/')));
+        type_str(&mut app, "(");
+        handle_key(&mut app, KeyEvent::from(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Filter);
+        assert!(app.filter_error.is_some());
+        assert!(app.filter.is_none());
+    }
+
+    #[test]
+    fn filter_applies_to_folders_and_resets_scroll() {
+        let mut app = App::new(sample_stats(), "/root".into(), "/db".into());
+        app.tab = Tab::Folders;
+        app.scroll = 5;
+
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('/')));
+        type_str(&mut app, "^a$");
+        handle_key(&mut app, KeyEvent::from(KeyCode::Enter));
+
+        assert_eq!(app.row_count(), 1);
+        assert_eq!(app.scroll, 0);
+        let text = render(&app);
+        assert!(text.contains("folders by symlinks"));
+    }
+
+    #[test]
+    fn slash_is_ignored_on_unfilterable_tabs() {
+        let mut app = App::new(sample_stats(), "/root".into(), "/db".into());
+        app.tab = Tab::Broken;
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('/')));
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn filter_mode_footer_shows_pattern_and_matches() {
+        let mut app = App::new(sample_stats(), "/root".into(), "/db".into());
+        app.tab = Tab::Files;
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('/')));
+        type_str(&mut app, "doc");
+        let text = render(&app);
+        assert!(text.contains("/ doc"));
+        assert!(text.contains("matches"));
+        // The list is not filtered until Enter.
+        assert!(text.contains("docs/x"));
     }
 }

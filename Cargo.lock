@@ -1719,6 +1719,7 @@ dependencies = [
  "indicatif",
  "ratatui",
  "rayon",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

@@ -64,7 +64,7 @@ Prints database analytics: totals and broken coverage, files with the most incom
 lndb tui
 ```
 
-Opens an interactive dashboard over the same statistics. It refuses to start when stdout is not a TTY. Keys: `q`/`Esc` quit, `Tab`/`h`/`l`/left/right switch views, `1`-`7` jump to a view, `j`/`k` scroll, `g`/`G` top/bottom, `[`/`]` change the folder grouping depth, `?` help, `r` reload from the database.
+Opens an interactive dashboard over the same statistics. It refuses to start when stdout is not a TTY. Keys: `q`/`Esc` quit, `Tab`/`h`/`l`/left/right switch views, `1`-`7` jump to a view, `j`/`k` scroll, `g`/`G` top/bottom, `[`/`]` change the folder grouping depth, `?` help, `r` reload from the database. On the Files, Folders and Target dirs views, `/` opens a case-insensitive regex filter (`Enter` applies, `Esc` cancels, an empty pattern clears it); the row counts and scrolling follow the filtered set.
 
 ## Known limitations
 
