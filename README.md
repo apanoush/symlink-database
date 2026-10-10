@@ -54,6 +54,18 @@ lndb list [--broken] [--absolute]
 
 Pages every symlink path in the database with `less`. `--broken` restricts the list to broken links; `--absolute` prints absolute paths instead of relative ones. In the full list, broken links are marked `(broken)`.
 
+```
+lndb stats [--json] [--limit N]
+```
+
+Prints database analytics: totals and broken coverage, files with the most incoming links, depth-1 folders by symlink count (immediate children), depth-1 target dirs by incoming links, the distribution of links per target, and broken links. `--limit N` caps each list (default 20); `--json` emits the full statistics struct as JSON (one view model shared with the TUI).
+
+```
+lndb tui
+```
+
+Opens an interactive dashboard over the same statistics. It refuses to start when stdout is not a TTY. Keys: `q`/`Esc` quit, `Tab`/`h`/`l`/left/right switch views, `1`-`7` jump to a view, `j`/`k` scroll, `g`/`G` top/bottom, `?` help, `r` reload from the database.
+
 ## Known limitations
 
 - A symlink whose target exists but is unreadable (e.g. a path component is permission-restricted) is reported as `broken`, because target existence is checked via `canonicalize`/`stat` and *any* failure counts as broken — the tool does not distinguish `EACCES` from `ENOENT`.
@@ -77,13 +89,16 @@ Both `path` and `target` are stored relative to `root`, so entries stay readable
 The crate is a library (`src/lib.rs`) plus a thin binary (`src/main.rs`). Each module has a single responsibility:
 
 ```
-src/main.rs    CLI entry point: parses args, dispatches to Cli, prints errors
-src/lib.rs     module declarations
-src/cli.rs     clap command definitions (sync/import/find) and orchestration
-src/config.rs  loads ~/.config/lndb/config.toml, builds Paths + Skip matcher
-src/symlink.rs the Symlink model: validates links, resolves targets, containment checks
-src/walker.rs  filesystem traversal, subroot validation, skip-pattern pruning
+src/main.rs     CLI entry point: parses args, dispatches to Cli, prints errors
+src/lib.rs      module declarations
+src/cli.rs      clap command definitions (sync/import/find/list/stats) and orchestration
+src/config.rs   loads ~/.config/lndb/config.toml, builds Paths + Skip matcher
+src/symlink.rs  the Symlink model: validates links, resolves targets, containment checks
+src/walker.rs   filesystem traversal, subroot validation, skip-pattern pruning
 src/database.rs rusqlite persistence: schema, import/upsert, pruning, queries
+src/stats.rs    aggregation over the database into one serializable Stats view model
+src/tui.rs      rendering + input for the dashboard (pure draw, no terminal I/O)
+src/tui_run.rs  terminal lifecycle + event loop for `lndb tui` (binary-only)
 ```
 
 Data flow for `sync`:

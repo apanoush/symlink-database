@@ -49,6 +49,20 @@ impl Database {
         }
 
         let conn = Connection::open(path)?;
+        Self::init_schema(&conn)?;
+        Ok(Self { conn })
+    }
+
+    /// Open a fresh in-memory database with the schema applied.
+    ///
+    /// Mainly useful for tests and throwaway analytics.
+    pub fn in_memory() -> Result<Self, DatabaseError> {
+        let conn = Connection::open_in_memory()?;
+        Self::init_schema(&conn)?;
+        Ok(Self { conn })
+    }
+
+    fn init_schema(conn: &Connection) -> Result<(), DatabaseError> {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS symlinks (
                 id       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,8 +72,12 @@ impl Database {
                 added_at INTEGER NOT NULL
             );",
         )?;
+        Ok(())
+    }
 
-        Ok(Self { conn })
+    /// Borrow the underlying connection for read-only aggregation (see `stats`).
+    pub fn connection(&self) -> &Connection {
+        &self.conn
     }
 
     pub fn import(&self, symlink: &Symlink) -> Result<ImportResult, DatabaseError> {

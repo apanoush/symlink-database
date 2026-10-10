@@ -12,6 +12,7 @@ use thiserror::Error;
 
 use crate::config::Config;
 use crate::database::{Database, ImportResult};
+use crate::stats::{self, Stats};
 use crate::symlink::{Symlink, SymlinkError, normalize};
 use crate::walker::{Walker, WalkerError};
 
@@ -88,6 +89,17 @@ pub enum Commands {
         #[arg(long)]
         absolute: bool,
     },
+    /// Print database statistics (a non-interactive twin of `lndb tui`)
+    Stats {
+        /// Emit JSON instead of a text report
+        #[arg(long)]
+        json: bool,
+        /// Rows to show per list in the text report
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Interactive statistics dashboard (requires a TTY)
+    Tui,
 }
 
 #[derive(Error, Debug)]
@@ -104,6 +116,8 @@ pub enum CliError {
     Io(#[from] std::io::Error),
     #[error("Environment variable error: {0}")]
     Env(#[from] shellexpand::LookupError<VarError>),
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 impl Cli {
@@ -113,6 +127,8 @@ impl Cli {
             Commands::Import { path } => self.import(path.clone()),
             Commands::Find { target, absolute } => self.find(target.clone(), *absolute),
             Commands::List { broken, absolute } => self.list(*broken, *absolute),
+            Commands::Stats { json, limit } => self.stats(*json, *limit),
+            Commands::Tui => unreachable!("`Tui` is dispatched by the binary entry point"),
         }
     }
 
@@ -244,6 +260,103 @@ impl Cli {
             return Err(std::io::Error::other(format!("less exited with status {status}")).into());
         }
         Ok(())
+    }
+
+    fn stats(&self, json: bool, limit: usize) -> Result<(), CliError> {
+        let config = Config::from_config_file()?;
+        let database = Database::new(&config.paths.database)?;
+        let stats = stats::collect(database.connection())?;
+
+        if json {
+            println!("{}", serde_json::to_string_pretty(&stats)?);
+        } else {
+            print_stats_text(&stats, &config.paths, limit);
+        }
+        Ok(())
+    }
+}
+
+/// Print the non-interactive text report for `lndb stats`.
+fn print_stats_text(stats: &Stats, paths: &crate::config::Paths, limit: usize) {
+    let totals = &stats.totals;
+    println!("root: {}", paths.root.display());
+    println!("database: {}", paths.database.display());
+    println!();
+    println!(
+        "{} symlinks, {} broken ({:.1}%), {} unique targets",
+        totals.total, totals.broken, totals.broken_percent, totals.unique_targets
+    );
+    if let (Some(oldest), Some(newest)) = (totals.oldest_added_at, totals.newest_added_at) {
+        println!(
+            "imports: {} to {}",
+            stats::format_epoch(oldest),
+            stats::format_epoch(newest)
+        );
+    }
+
+    print_section(
+        "Files with most links",
+        stats.top_targets.len(),
+        stats.top_targets.iter().take(limit).map(|target| {
+            let broken = if target.broken > 0 {
+                format!("  ({} broken)", target.broken)
+            } else {
+                String::new()
+            };
+            format!("{:>6}  {}{}", target.links, target.target, broken)
+        }),
+    );
+
+    print_section(
+        "Depth-1 folders by symlinks (immediate children)",
+        stats.folders.len(),
+        stats
+            .folders
+            .iter()
+            .take(limit)
+            .map(|folder| format!("{:>6}  {}", folder.links, folder.folder)),
+    );
+
+    print_section(
+        "Depth-1 target dirs by incoming links",
+        stats.target_dirs.len(),
+        stats
+            .target_dirs
+            .iter()
+            .take(limit)
+            .map(|folder| format!("{:>6}  {}", folder.links, folder.folder)),
+    );
+
+    print_section(
+        "Targets per link count",
+        stats.links_per_target.len(),
+        stats
+            .links_per_target
+            .iter()
+            .map(|bucket| format!("{:>6}  {} link(s)", bucket.targets, bucket.links)),
+    );
+
+    print_section(
+        "Broken symlinks",
+        stats.broken.len(),
+        stats
+            .broken
+            .iter()
+            .take(limit)
+            .map(|link| format!("{}  ->  {}", link.path, link.target)),
+    );
+}
+
+/// Print one titled list, adding an "and N more" footer when truncated.
+fn print_section(title: &str, total: usize, rows: impl Iterator<Item = String>) {
+    println!("\n{title} ({total}):");
+    let mut printed = 0;
+    for row in rows {
+        println!("  {row}");
+        printed += 1;
+    }
+    if total > printed {
+        println!("  ... and {} more", total - printed);
     }
 }
 
