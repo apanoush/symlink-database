@@ -55,16 +55,16 @@ lndb list [--broken] [--absolute]
 Pages every symlink path in the database with `less`. `--broken` restricts the list to broken links; `--absolute` prints absolute paths instead of relative ones. In the full list, broken links are marked `(broken)`.
 
 ```
-lndb stats [--json] [--limit N]
+lndb stats [--json] [--limit N] [--depth N]
 ```
 
-Prints database analytics: totals and broken coverage, files with the most incoming links, depth-1 folders by symlink count (immediate children), depth-1 target dirs by incoming links, the distribution of links per target, and broken links. `--limit N` caps each list (default 20); `--json` emits the full statistics struct as JSON (one view model shared with the TUI).
+Prints database analytics: totals and broken coverage, files with the most incoming links, folders by symlink count, target dirs by incoming links, the distribution of links per target, and broken links. The folder and target-dir lists group entries by the first `depth` path components of their containing directory (`--depth N`, default 2); an entry directly at the root is grouped under `(root)`. `--limit N` caps each list (default 20); `--json` emits the full statistics struct as JSON (one view model shared with the TUI).
 
 ```
 lndb tui
 ```
 
-Opens an interactive dashboard over the same statistics. It refuses to start when stdout is not a TTY. Keys: `q`/`Esc` quit, `Tab`/`h`/`l`/left/right switch views, `1`-`7` jump to a view, `j`/`k` scroll, `g`/`G` top/bottom, `?` help, `r` reload from the database.
+Opens an interactive dashboard over the same statistics. It refuses to start when stdout is not a TTY. Keys: `q`/`Esc` quit, `Tab`/`h`/`l`/left/right switch views, `1`-`7` jump to a view, `j`/`k` scroll, `g`/`G` top/bottom, `[`/`]` change the folder grouping depth, `?` help, `r` reload from the database.
 
 ## Known limitations
 

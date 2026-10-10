@@ -29,8 +29,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = Config::from_config_file()?;
     let database = Database::new(&config.paths.database)?;
+    let initial = stats::collect(database.connection(), stats::DEFAULT_DEPTH)?;
     let mut app = App::new(
-        stats::collect(database.connection())?,
+        initial,
         config.paths.root.display().to_string(),
         config.paths.database.display().to_string(),
     );
@@ -44,7 +45,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             && key.kind == KeyEventKind::Press
         {
             match tui::handle_key(&mut app, key) {
-                Action::Refresh => app.refresh(stats::collect(database.connection())?),
+                Action::Refresh => {
+                    let snapshot = stats::collect(database.connection(), app.depth)?;
+                    app.refresh(snapshot);
+                }
                 Action::None => {}
             }
         }

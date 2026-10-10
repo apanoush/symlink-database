@@ -83,6 +83,8 @@ pub struct App {
     pub database: String,
     /// Currently selected tab.
     pub tab: Tab,
+    /// Folder grouping depth for the folder and target-dir views.
+    pub depth: usize,
     /// Scroll offset for the active tab, in rows.
     pub scroll: usize,
     /// Whether the help overlay is visible.
@@ -95,6 +97,7 @@ impl App {
     /// Create an app from freshly collected [`Stats`].
     pub fn new(stats: Stats, root: String, database: String) -> Self {
         Self {
+            depth: stats.depth,
             stats,
             root,
             database,
@@ -107,6 +110,7 @@ impl App {
 
     /// Replace the view model (used on refresh) and keep the scroll in range.
     pub fn refresh(&mut self, stats: Stats) {
+        self.depth = stats.depth;
         self.stats = stats;
         self.clamp_scroll();
     }
@@ -159,6 +163,14 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
         KeyCode::Char('?') => app.show_help = true,
         KeyCode::Char('r') => return Action::Refresh,
+        KeyCode::Char(']') => {
+            app.depth += 1;
+            return Action::Refresh;
+        }
+        KeyCode::Char('[') if app.depth > 1 => {
+            app.depth -= 1;
+            return Action::Refresh;
+        }
         KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
             app.tab = app.tab.next();
             app.scroll = 0;
@@ -278,6 +290,8 @@ fn draw_footer(frame: &mut Frame, area: Rect) {
         Span::raw(" jump  "),
         key_hint("j/k"),
         Span::raw(" scroll  "),
+        key_hint("[ ]"),
+        Span::raw(" depth  "),
         key_hint("?"),
         Span::raw(" help  "),
         key_hint("r"),
@@ -375,7 +389,7 @@ fn draw_overview(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(
         BarChart::horizontal(bars)
             .block(Block::bordered().title(range_title(
-                " depth-1 folders by symlinks ",
+                &format!(" depth-{} folders by symlinks ", app.depth),
                 start,
                 end,
                 app.stats.folders.len(),
@@ -387,7 +401,7 @@ fn draw_overview(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// Which depth-1 aggregate a chart tab renders.
+/// Which folder aggregate a chart tab renders.
 #[derive(Clone, Copy)]
 enum Chart {
     Folders,
@@ -395,10 +409,11 @@ enum Chart {
 }
 
 fn draw_folder_chart(frame: &mut Frame, app: &App, area: Rect, chart: Chart) {
-    let (data, title) = match chart {
-        Chart::Folders => (&app.stats.folders, " depth-1 folders by symlinks "),
-        Chart::TargetDirs => (&app.stats.target_dirs, " depth-1 target dirs by links "),
+    let (data, label) = match chart {
+        Chart::Folders => (&app.stats.folders, "folders by symlinks"),
+        Chart::TargetDirs => (&app.stats.target_dirs, "target dirs by links"),
     };
+    let title = format!(" depth-{} {} ", app.depth, label);
     let (start, end) = scroll_range(area, app.scroll, data.len(), 2);
     let bars = data[start..end]
         .iter()
@@ -407,7 +422,7 @@ fn draw_folder_chart(frame: &mut Frame, app: &App, area: Rect, chart: Chart) {
     let max = data.first().map_or(1, |folder| folder.links).max(1);
     frame.render_widget(
         BarChart::horizontal(bars)
-            .block(Block::bordered().title(range_title(title, start, end, data.len())))
+            .block(Block::bordered().title(range_title(&title, start, end, data.len())))
             .bar_width(1)
             .bar_gap(0)
             .max(max),
@@ -532,12 +547,13 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from("  j / k        scroll down / up"),
         Line::from("  g / G        scroll to top / bottom"),
         Line::from("  r            refresh from the database"),
+        Line::from("  [ / ]        folder grouping depth"),
         Line::from("  ?            toggle this help"),
         Line::from(""),
         Line::from("Views").style(Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
         Line::from("  Files         files with the most incoming links"),
-        Line::from("  Folders       depth-1 folders by direct symlink count"),
-        Line::from("  Target dirs   depth-1 target areas by incoming links"),
+        Line::from("  Folders       folders by symlink count (grouping depth applies)"),
+        Line::from("  Target dirs   target folders by incoming links (depth applies)"),
         Line::from("  Broken        every broken symlink and its target"),
         Line::from("  Distribution  targets grouped by link count"),
         Line::from("  Newest        symlinks by first-import time"),
@@ -625,6 +641,7 @@ mod tests {
 
     fn sample_stats() -> Stats {
         Stats {
+            depth: 2,
             totals: Totals {
                 total: 3,
                 broken: 1,
@@ -762,5 +779,46 @@ mod tests {
 
         handle_key(&mut app, KeyEvent::from(KeyCode::Char('q')));
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn bracket_keys_change_depth_and_request_refresh() {
+        let mut app = App::new(sample_stats(), "/root".into(), "/db".into());
+        assert_eq!(app.depth, 2);
+
+        assert_eq!(
+            handle_key(&mut app, KeyEvent::from(KeyCode::Char(']'))),
+            Action::Refresh
+        );
+        assert_eq!(app.depth, 3);
+
+        assert_eq!(
+            handle_key(&mut app, KeyEvent::from(KeyCode::Char('['))),
+            Action::Refresh
+        );
+        assert_eq!(app.depth, 2);
+
+        // Clamp at depth 1: the key is consumed but no refresh is needed.
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('[')));
+        assert_eq!(app.depth, 1);
+        assert_eq!(
+            handle_key(&mut app, KeyEvent::from(KeyCode::Char('['))),
+            Action::None
+        );
+        assert_eq!(app.depth, 1);
+    }
+
+    #[test]
+    fn refresh_syncs_depth_and_resets_clamp() {
+        let mut app = App::new(sample_stats(), "/root".into(), "/db".into());
+        app.depth = 4;
+        app.tab = Tab::Folders;
+        app.scroll = 5;
+        let mut stats = sample_stats();
+        stats.depth = 1;
+        stats.folders.truncate(1);
+        app.refresh(stats);
+        assert_eq!(app.depth, 1);
+        assert_eq!(app.scroll, 0);
     }
 }

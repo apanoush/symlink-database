@@ -97,6 +97,9 @@ pub enum Commands {
         /// Rows to show per list in the text report
         #[arg(long, default_value_t = 20)]
         limit: usize,
+        /// Folder grouping depth (path components) for the folder views
+        #[arg(long, default_value_t = crate::stats::DEFAULT_DEPTH)]
+        depth: usize,
     },
     /// Interactive statistics dashboard (requires a TTY)
     Tui,
@@ -127,7 +130,7 @@ impl Cli {
             Commands::Import { path } => self.import(path.clone()),
             Commands::Find { target, absolute } => self.find(target.clone(), *absolute),
             Commands::List { broken, absolute } => self.list(*broken, *absolute),
-            Commands::Stats { json, limit } => self.stats(*json, *limit),
+            Commands::Stats { json, limit, depth } => self.stats(*json, *limit, *depth),
             Commands::Tui => unreachable!("`Tui` is dispatched by the binary entry point"),
         }
     }
@@ -262,10 +265,10 @@ impl Cli {
         Ok(())
     }
 
-    fn stats(&self, json: bool, limit: usize) -> Result<(), CliError> {
+    fn stats(&self, json: bool, limit: usize, depth: usize) -> Result<(), CliError> {
         let config = Config::from_config_file()?;
         let database = Database::new(&config.paths.database)?;
-        let stats = stats::collect(database.connection())?;
+        let stats = stats::collect(database.connection(), depth)?;
 
         if json {
             println!("{}", serde_json::to_string_pretty(&stats)?);
@@ -308,7 +311,7 @@ fn print_stats_text(stats: &Stats, paths: &crate::config::Paths, limit: usize) {
     );
 
     print_section(
-        "Depth-1 folders by symlinks (immediate children)",
+        &format!("Depth-{} folders by symlinks", stats.depth),
         stats.folders.len(),
         stats
             .folders
@@ -318,7 +321,7 @@ fn print_stats_text(stats: &Stats, paths: &crate::config::Paths, limit: usize) {
     );
 
     print_section(
-        "Depth-1 target dirs by incoming links",
+        &format!("Depth-{} target dirs by incoming links", stats.depth),
         stats.target_dirs.len(),
         stats
             .target_dirs

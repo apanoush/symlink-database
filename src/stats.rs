@@ -7,8 +7,11 @@
 //! TUI and the text report all share one source of truth.
 //!
 //! Stored `path` and `target` columns are relative to the scan root
-//! (see `README.md`). A "depth-1 folder" is the first path component, or
-//! `(root)` for entries that live directly at the root.
+//! (see `README.md`). The folder views group each entry by the first `depth`
+//! components of its containing directory (see [`collect`]); entries whose
+//! parent is the root itself are grouped under `(root)`.
+
+use std::collections::HashMap;
 
 use rusqlite::Connection;
 use serde::Serialize;
@@ -26,19 +29,19 @@ pub struct TargetStat {
     pub broken: u64,
 }
 
-/// A depth-1 folder and a link count.
+/// A folder group and a link count.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FolderStat {
-    /// First path component, or `(root)`.
+    /// First `depth` components of the containing directory, or `(root)`.
     pub folder: String,
     /// Number of symlinks counted for this folder.
     pub links: u64,
 }
 
-/// Broken-link health for a single depth-1 folder.
+/// Broken-link health for a single folder group.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct FolderHealth {
-    /// First path component, or `(root)`.
+    /// First `depth` components of the containing directory, or `(root)`.
     pub folder: String,
     /// Number of symlinks counted for this folder.
     pub links: u64,
@@ -87,22 +90,29 @@ pub struct Totals {
     pub newest_added_at: Option<i64>,
 }
 
+/// Default folder grouping depth used by the CLI and the TUI.
+pub const DEFAULT_DEPTH: usize = 2;
+
 /// Everything the UI shows, computed once per refresh.
 ///
 /// `Serialize` is derived so `lndb stats --json` and future consumers come for
 /// free. Keep formatting (units, dates, padding) out of this struct.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Stats {
+    /// Folder grouping depth used for the `folders`, `target_dirs` and
+    /// `folder_health` views.
+    pub depth: usize,
     /// Whole-database totals.
     pub totals: Totals,
     /// Files with the most incoming links, highest first.
     pub top_targets: Vec<TargetStat>,
-    /// Depth-1 folders by number of symlinks they directly contain,
-    /// highest first.
+    /// Folders by number of symlinks they hold (first `depth` components of
+    /// each symlink's parent), highest first.
     pub folders: Vec<FolderStat>,
-    /// Depth-1 target directories by number of incoming links, highest first.
+    /// Folders by number of incoming links (first `depth` components of each
+    /// target's parent), highest first.
     pub target_dirs: Vec<FolderStat>,
-    /// Broken-link health per depth-1 folder, highest link count first.
+    /// Broken-link health per folder group, highest link count first.
     pub folder_health: Vec<FolderHealth>,
     /// Distribution of incoming links per target, ascending.
     pub links_per_target: Vec<LinksBucket>,
@@ -112,14 +122,38 @@ pub struct Stats {
     pub broken: Vec<LinkStat>,
 }
 
-/// Compute the whole view model with a set of read-only SQL queries.
-pub fn collect(conn: &Connection) -> Result<Stats, DatabaseError> {
+impl Default for Stats {
+    fn default() -> Self {
+        Self {
+            depth: DEFAULT_DEPTH,
+            totals: Totals::default(),
+            top_targets: Vec::new(),
+            folders: Vec::new(),
+            target_dirs: Vec::new(),
+            folder_health: Vec::new(),
+            links_per_target: Vec::new(),
+            newest: Vec::new(),
+            broken: Vec::new(),
+        }
+    }
+}
+
+/// Compute the whole view model.
+///
+/// `depth` controls how many path components the folder views group by
+/// (clamped to at least 1). It is applied to each item's containing directory,
+/// so `depth = 1` yields the top-level folders and `depth = 2` their
+/// subfolders.
+pub fn collect(conn: &Connection, depth: usize) -> Result<Stats, DatabaseError> {
+    let depth = depth.max(1);
+    let rows = depth_rows(conn)?;
     Ok(Stats {
+        depth,
         totals: totals(conn)?,
         top_targets: top_targets(conn)?,
-        folders: folders(conn)?,
-        target_dirs: target_dirs(conn)?,
-        folder_health: folder_health(conn)?,
+        folders: group_folders(&rows, depth),
+        target_dirs: group_target_dirs(&rows, depth),
+        folder_health: group_health(&rows, depth),
         links_per_target: links_per_target(conn)?,
         newest: newest(conn)?,
         broken: broken(conn)?,
@@ -213,71 +247,93 @@ fn top_targets(conn: &Connection) -> Result<Vec<TargetStat>, DatabaseError> {
         .map_err(DatabaseError::from)
 }
 
-fn folders(conn: &Connection) -> Result<Vec<FolderStat>, DatabaseError> {
-    // Depth-1 immediate children only: a path with at most one `/` is either a
-    // link directly at the root (0 slashes) or inside a depth-1 folder (1 slash).
-    let mut stmt = conn.prepare(
-        "SELECT CASE WHEN instr(path, '/') = 0 THEN '(root)'
-                     ELSE substr(path, 1, instr(path, '/') - 1) END AS folder,
-                COUNT(*) AS links
-         FROM symlinks
-         WHERE (length(path) - length(replace(path, '/', ''))) <= 1
-         GROUP BY folder
-         ORDER BY links DESC, folder ASC",
-    )?;
+/// The `(path, target, broken)` rows needed for depth grouping, read once.
+fn depth_rows(conn: &Connection) -> Result<Vec<(String, String, bool)>, DatabaseError> {
+    let mut stmt = conn.prepare("SELECT path, target, broken FROM symlinks")?;
     let rows = stmt.query_map([], |row| {
-        Ok(FolderStat {
-            folder: row.get(0)?,
-            links: row.get::<_, i64>(1)? as u64,
-        })
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)? != 0,
+        ))
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(DatabaseError::from)
 }
 
-fn target_dirs(conn: &Connection) -> Result<Vec<FolderStat>, DatabaseError> {
-    // Top-level target folder, counting links at any depth.
-    let mut stmt = conn.prepare(
-        "SELECT CASE WHEN instr(target, '/') = 0 THEN '(root)'
-                     ELSE substr(target, 1, instr(target, '/') - 1) END AS folder,
-                COUNT(*) AS links
-         FROM symlinks
-         GROUP BY folder
-         ORDER BY links DESC, folder ASC",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok(FolderStat {
-            folder: row.get(0)?,
-            links: row.get::<_, i64>(1)? as u64,
-        })
-    })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(DatabaseError::from)
+/// The first `depth` components of an item's containing directory.
+///
+/// The item's own file name is dropped, so `a/b/link` at depth 2 groups under
+/// `a/b`; an item directly at the root groups under `(root)`.
+fn folder_key(item: &str, depth: usize) -> String {
+    let parent = match item.rfind('/') {
+        Some(index) => &item[..index],
+        None => "",
+    };
+    let mut key = String::new();
+    for component in parent
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .take(depth)
+    {
+        if !key.is_empty() {
+            key.push('/');
+        }
+        key.push_str(component);
+    }
+    if key.is_empty() {
+        "(root)".to_string()
+    } else {
+        key
+    }
 }
 
-fn folder_health(conn: &Connection) -> Result<Vec<FolderHealth>, DatabaseError> {
-    let mut stmt = conn.prepare(
-        "SELECT CASE WHEN instr(path, '/') = 0 THEN '(root)'
-                     ELSE substr(path, 1, instr(path, '/') - 1) END AS folder,
-                COUNT(*) AS links,
-                COALESCE(SUM(broken), 0) AS broken
-         FROM symlinks
-         WHERE (length(path) - length(replace(path, '/', ''))) <= 1
-         GROUP BY folder
-         ORDER BY links DESC, folder ASC",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        let links = row.get::<_, i64>(1)? as u64;
-        let broken = row.get::<_, i64>(2)? as u64;
-        Ok(FolderHealth {
-            folder: row.get(0)?,
+fn group_folders(rows: &[(String, String, bool)], depth: usize) -> Vec<FolderStat> {
+    let mut map: HashMap<String, u64> = HashMap::new();
+    for (path, _, _) in rows {
+        *map.entry(folder_key(path, depth)).or_default() += 1;
+    }
+    let mut out: Vec<FolderStat> = map
+        .into_iter()
+        .map(|(folder, links)| FolderStat { folder, links })
+        .collect();
+    out.sort_by(|a, b| b.links.cmp(&a.links).then_with(|| a.folder.cmp(&b.folder)));
+    out
+}
+
+fn group_target_dirs(rows: &[(String, String, bool)], depth: usize) -> Vec<FolderStat> {
+    let mut map: HashMap<String, u64> = HashMap::new();
+    for (_, target, _) in rows {
+        *map.entry(folder_key(target, depth)).or_default() += 1;
+    }
+    let mut out: Vec<FolderStat> = map
+        .into_iter()
+        .map(|(folder, links)| FolderStat { folder, links })
+        .collect();
+    out.sort_by(|a, b| b.links.cmp(&a.links).then_with(|| a.folder.cmp(&b.folder)));
+    out
+}
+
+fn group_health(rows: &[(String, String, bool)], depth: usize) -> Vec<FolderHealth> {
+    let mut map: HashMap<String, (u64, u64)> = HashMap::new();
+    for (path, _, broken) in rows {
+        let entry = map.entry(folder_key(path, depth)).or_default();
+        entry.0 += 1;
+        if *broken {
+            entry.1 += 1;
+        }
+    }
+    let mut out: Vec<FolderHealth> = map
+        .into_iter()
+        .map(|(folder, (links, broken))| FolderHealth {
+            folder,
             links,
             broken,
             broken_percent: percent(broken, links),
         })
-    })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(DatabaseError::from)
+        .collect();
+    out.sort_by(|a, b| b.links.cmp(&a.links).then_with(|| a.folder.cmp(&b.folder)));
+    out
 }
 
 fn links_per_target(conn: &Connection) -> Result<Vec<LinksBucket>, DatabaseError> {
@@ -355,7 +411,7 @@ mod tests {
             ("a/l2", "docs/x", false, 20),
             ("b/l3", "docs/y", true, 30),
         ]);
-        let s = collect(db.connection()).unwrap();
+        let s = collect(db.connection(), DEFAULT_DEPTH).unwrap();
         assert_eq!(s.totals.total, 3);
         assert_eq!(s.totals.broken, 1);
         assert_eq!(s.totals.unique_targets, 2);
@@ -367,7 +423,7 @@ mod tests {
     #[test]
     fn totals_defaults_are_zero_for_empty_db() {
         let db = db_with(&[]);
-        let s = collect(db.connection()).unwrap();
+        let s = collect(db.connection(), DEFAULT_DEPTH).unwrap();
         assert_eq!(s.totals.total, 0);
         assert_eq!(s.totals.broken_percent, 0.0);
         assert_eq!(s.totals.oldest_added_at, None);
@@ -380,7 +436,7 @@ mod tests {
             ("a/l2", "docs/x", false, 1),
             ("b/l3", "docs/y", true, 1),
         ]);
-        let s = collect(db.connection()).unwrap();
+        let s = collect(db.connection(), DEFAULT_DEPTH).unwrap();
         assert_eq!(s.top_targets.len(), 2);
         assert_eq!(s.top_targets[0].target, "docs/x");
         assert_eq!(s.top_targets[0].links, 2);
@@ -390,54 +446,85 @@ mod tests {
     }
 
     #[test]
-    fn folders_count_immediate_children_only() {
+    fn folders_group_by_parent_prefix() {
         let db = db_with(&[
             ("a/l1", "docs/x", false, 1),
             ("a/l2", "docs/x", false, 1),
-            ("a/deep/l3", "docs/x", false, 1), // depth 2: excluded
+            ("a/deep/l3", "docs/x", false, 1),
             ("b/l4", "docs/y", false, 1),
-            ("top", "docs/y", false, 1), // at root
+            ("top", "docs/y", false, 1), // directly at the root
         ]);
-        let s = collect(db.connection()).unwrap();
-        let by_name = |name: &str| s.folders.iter().find(|f| f.folder == name).map(|f| f.links);
-        assert_eq!(by_name("a"), Some(2));
-        assert_eq!(by_name("b"), Some(1));
-        assert_eq!(by_name("(root)"), Some(1));
-        assert_eq!(by_name("a/deep"), None);
+
+        // depth 1: every symlink under `a/...` counts toward `a`.
+        let depth1 = collect(db.connection(), 1).unwrap();
+        assert_eq!(depth1.depth, 1);
+        let by_name =
+            |s: &Stats, name: &str| s.folders.iter().find(|f| f.folder == name).map(|f| f.links);
+        assert_eq!(by_name(&depth1, "a"), Some(3));
+        assert_eq!(by_name(&depth1, "b"), Some(1));
+        assert_eq!(by_name(&depth1, "(root)"), Some(1));
+
+        // depth 2: `a/deep/l3` splits off from `a`.
+        let depth2 = collect(db.connection(), 2).unwrap();
+        assert_eq!(depth2.depth, 2);
+        assert_eq!(by_name(&depth2, "a"), Some(2));
+        assert_eq!(by_name(&depth2, "a/deep"), Some(1));
+        assert_eq!(by_name(&depth2, "b"), Some(1));
+        assert_eq!(by_name(&depth2, "(root)"), Some(1));
     }
 
     #[test]
-    fn target_dirs_group_by_top_level_and_count_all_depths() {
+    fn target_dirs_group_by_parent_prefix() {
         let db = db_with(&[
             ("a/l1", "docs/deep/x", false, 1),
             ("a/l2", "docs/deep/x", false, 1),
             ("b/l3", "assets/y", false, 1),
             ("root_link", "z", false, 1),
         ]);
-        let s = collect(db.connection()).unwrap();
-        let by_name = |name: &str| {
+
+        let depth1 = collect(db.connection(), 1).unwrap();
+        let by_name = |s: &Stats, name: &str| {
             s.target_dirs
                 .iter()
                 .find(|f| f.folder == name)
                 .map(|f| f.links)
         };
-        assert_eq!(by_name("docs"), Some(2));
-        assert_eq!(by_name("assets"), Some(1));
-        assert_eq!(by_name("(root)"), Some(1));
+        assert_eq!(by_name(&depth1, "docs"), Some(2));
+        assert_eq!(by_name(&depth1, "assets"), Some(1));
+        assert_eq!(by_name(&depth1, "(root)"), Some(1));
+
+        let depth2 = collect(db.connection(), 2).unwrap();
+        assert_eq!(by_name(&depth2, "docs/deep"), Some(2));
+        assert_eq!(by_name(&depth2, "assets"), Some(1));
     }
 
     #[test]
-    fn folder_health_reports_broken_percent() {
+    fn folder_health_reports_broken_percent_at_depth() {
         let db = db_with(&[
             ("a/l1", "docs/x", true, 1),
             ("a/l2", "docs/x", false, 1),
-            ("b/l3", "docs/y", false, 1),
+            ("a/sub/l3", "docs/y", true, 1),
+            ("b/l4", "docs/y", false, 1),
         ]);
-        let s = collect(db.connection()).unwrap();
-        let a = s.folder_health.iter().find(|f| f.folder == "a").unwrap();
-        assert_eq!(a.links, 2);
-        assert_eq!(a.broken, 1);
-        assert!((a.broken_percent - 50.0).abs() < 1e-9);
+        let depth1 = collect(db.connection(), 1).unwrap();
+        let a = depth1
+            .folder_health
+            .iter()
+            .find(|f| f.folder == "a")
+            .unwrap();
+        assert_eq!(a.links, 3);
+        assert_eq!(a.broken, 2);
+        assert!((a.broken_percent - 200.0 / 3.0).abs() < 1e-9);
+
+        let depth2 = collect(db.connection(), 2).unwrap();
+        let a_sub = depth2
+            .folder_health
+            .iter()
+            .find(|f| f.folder == "a/sub")
+            .unwrap();
+        assert_eq!(a_sub.links, 1);
+        assert_eq!(a_sub.broken, 1);
+        assert!((a_sub.broken_percent - 100.0).abs() < 1e-9);
     }
 
     #[test]
@@ -448,7 +535,7 @@ mod tests {
             ("b/l3", "docs/y", false, 1),
             ("c/l4", "docs/z", false, 1),
         ]);
-        let s = collect(db.connection()).unwrap();
+        let s = collect(db.connection(), DEFAULT_DEPTH).unwrap();
         assert_eq!(
             s.links_per_target,
             vec![
@@ -471,7 +558,7 @@ mod tests {
             ("b/l2", "docs/y", true, 30),
             ("c/l3", "docs/z", true, 20),
         ]);
-        let s = collect(db.connection()).unwrap();
+        let s = collect(db.connection(), DEFAULT_DEPTH).unwrap();
         assert_eq!(s.newest[0].path, "b/l2");
         assert_eq!(s.newest[2].path, "a/l1");
         assert_eq!(
