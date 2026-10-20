@@ -2,6 +2,14 @@
 name = "symlink_database"
 version = "0.1.0"
 edition = "2024"
+repository = "https://github.com/apanoush/lndb"
+authors = ["aa-p"]
+
+[package.metadata.wix]
+upgrade-guid = "314AE640-9DC3-4566-B845-AA19E4FA5217"
+path-guid = "95710D33-184F-4C7C-B978-658738439D22"
+license = false
+eula = false
 
 [dependencies]
 clap = { version = "4.5.0", features = ["derive"] }
@@ -22,3 +30,8 @@ walkdir = "2.5.0"
 [[bin]]
 name = "lndb"
 path = "src/main.rs"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
