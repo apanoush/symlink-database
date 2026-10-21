@@ -32,6 +32,11 @@ schema change and no TUI tab.
 - Listing every link that participates in a chain instead of only the starting
   links. Rejected as the default because the request is links that point at
   links; downstream symlinks are still shown inside each chain.
+- Merging the report into `lndb list --chains`. Rejected because `list` is a
+  flat, paged row listing with `--broken` and `--absolute`, while chains is a
+  derived multi-line report with a summary and JSON. A mode flag would give
+  `--absolute`, `--broken` and `--json` different meanings depending on
+  `--chains`, and would make paging conditional.
 
 ## Consequences
 
@@ -42,3 +47,6 @@ schema change and no TUI tab.
   existing statistics path.
 - A stale database can report chains that no longer exist until the next
   `sync`.
+- The CLI keeps two focused commands. `list` help points to `chains` for
+  link-to-link queries, and chain-specific flags such as `--absolute` belong on
+  `chains` rather than on `list`.

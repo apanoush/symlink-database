@@ -88,6 +88,8 @@ pub enum Commands {
         json: bool,
     },
     /// List all symlink paths in the database (paged with less)
+    ///
+    /// For symlinks that point to other symlinks, use `lndb chains`.
     List {
         /// Only show broken symlinks
         #[arg(long)]
