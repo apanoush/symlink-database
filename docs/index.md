@@ -17,3 +17,4 @@ links.
 - [0001 Derived SQLite database](decisions/0001-derived-sqlite-database.md)
 - [0002 Gitignore-style skip patterns](decisions/0002-gitignore-style-skip-patterns.md)
 - [0003 Parallel symlink processing](decisions/0003-parallel-symlink-processing.md)
+- [0004 Chain analysis from stored targets](decisions/0004-chain-analysis-from-stored-targets.md)

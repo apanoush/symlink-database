@@ -48,6 +48,12 @@ lndb find <TARGET> [--absolute]
 Lists every symlink in the database whose target matches `TARGET`. The target can be given as an absolute path, an expanded `$VAR`/`~` expression, or relative to the current directory (e.g. `lndb find '$VAR/notes/note.md'`). By default paths are printed relative to `root`; `--absolute` prints absolute paths. Broken symlinks are marked `(broken)`.
 
 ```
+lndb chains [--json]
+```
+
+Lists every symlink whose immediate target is another symlink, together with the rest of the chain. Paths are relative to `root`. A chain that ends at a missing target is marked `(broken)`; a chain that revisits a node is marked `(cycle)`. `--json` emits the report. The analysis reads the database, so a target symlink that was not scanned (for example one inside a skipped directory) is not detected; run `lndb sync` first.
+
+```
 lndb list [--broken] [--absolute]
 ```
 

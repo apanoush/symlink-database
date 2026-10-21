@@ -6,8 +6,9 @@ module has a single responsibility, and terminal I/O stays in the binary.
 ```
 src/main.rs     CLI entry point: parses args, dispatches to Cli, prints errors
 src/lib.rs      module declarations
-src/cli.rs      clap command definitions (sync/import/find/list/stats/tui) and orchestration
+src/cli.rs      clap command definitions (sync/import/find/chains/list/stats/tui) and orchestration
 src/config.rs   loads ~/.config/lndb/config.toml, builds Paths + Skip matcher
+src/chain.rs    chain analysis over stored rows (links that point to links)
 src/symlink.rs  the Symlink model: validates links, resolves targets, containment checks
 src/walker.rs   filesystem traversal, subroot validation, skip-pattern pruning
 src/database.rs rusqlite persistence: schema, import/upsert, pruning, queries
@@ -57,6 +58,20 @@ src/tui_run.rs  terminal lifecycle + event loop for `lndb tui` (binary-only)
   error callback and iteration continues (`src/walker.rs` lines 107-119).
 - The database is derived state. It can be dropped and rebuilt from the
   filesystem with a single full `sync` (`src/database.rs` lines 168-198).
+
+## Chain analysis
+
+The `chain` module answers "which symlinks point at another symlink?" from the
+database alone. A row participates when its normalized `target` equals another
+row's `path`; `collect` follows those edges with a visited set, so cycles
+terminate, and reports each starting link, its downstream symlinks and its
+terminal path (`src/chain.rs` lines 49-97). The `lndb chains` command renders
+the report (`src/cli.rs` lines 242-252).
+
+Because the analysis reads only stored rows, it cannot follow a target that was
+never scanned, such as a symlink inside a skipped directory, and an immediate
+target outside `root` is stored as its canonical destination instead of the
+intermediate symlink. A full `sync` keeps the source rows current.
 
 ## Progress reporting
 

@@ -10,6 +10,7 @@ use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
 use thiserror::Error;
 
+use crate::chain::{self, ChainLink, ChainReport};
 use crate::config::Config;
 use crate::database::{Database, ImportResult};
 use crate::stats::{self, Stats};
@@ -80,6 +81,12 @@ pub enum Commands {
         #[arg(long)]
         absolute: bool,
     },
+    /// Show symlinks that point to another symlink, with their chains
+    Chains {
+        /// Emit JSON instead of a text report
+        #[arg(long)]
+        json: bool,
+    },
     /// List all symlink paths in the database (paged with less)
     List {
         /// Only show broken symlinks
@@ -129,6 +136,7 @@ impl Cli {
             Commands::Sync { subroot } => self.sync(subroot.clone()),
             Commands::Import { path } => self.import(path.clone()),
             Commands::Find { target, absolute } => self.find(target.clone(), *absolute),
+            Commands::Chains { json } => self.chains(*json),
             Commands::List { broken, absolute } => self.list(*broken, *absolute),
             Commands::Stats { json, limit, depth } => self.stats(*json, *limit, *depth),
             Commands::Tui => unreachable!("`Tui` is dispatched by the binary entry point"),
@@ -231,6 +239,19 @@ impl Cli {
         Ok(())
     }
 
+    fn chains(&self, json: bool) -> Result<(), CliError> {
+        let config = Config::from_config_file()?;
+        let database = Database::new(&config.paths.database)?;
+        let report = chain::collect(&database.all()?);
+
+        if json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            print_chains_text(&report);
+        }
+        Ok(())
+    }
+
     fn list(&self, broken: bool, absolute: bool) -> Result<(), CliError> {
         let config = Config::from_config_file()?;
         let database = Database::new(&config.paths.database)?;
@@ -277,6 +298,42 @@ impl Cli {
         }
         Ok(())
     }
+}
+
+/// Print the non-interactive text report for `lndb chains`.
+fn print_chains_text(report: &ChainReport) {
+    if report.links.is_empty() {
+        println!("no symlinks point to another symlink");
+        return;
+    }
+
+    println!(
+        "{} symlinks point to another symlink ({} broken, {} in cycles, longest chain {})",
+        report.links.len(),
+        report.broken,
+        report.cycles,
+        report.longest
+    );
+    println!();
+    for link in &report.links {
+        println!("{}", format_chain(link));
+    }
+}
+
+/// Render one chain as `path -> ... -> terminal` with a status suffix.
+fn format_chain(link: &ChainLink) -> String {
+    let mut nodes: Vec<String> = Vec::with_capacity(link.chain.len() + 2);
+    nodes.push(link.path.display().to_string());
+    nodes.extend(link.chain.iter().map(|path| path.display().to_string()));
+    nodes.push(link.terminal.display().to_string());
+
+    let mut line = nodes.join(" -> ");
+    if link.cycle {
+        line.push_str(" (cycle)");
+    } else if link.broken {
+        line.push_str(" (broken)");
+    }
+    line
 }
 
 /// Print the non-interactive text report for `lndb stats`.
@@ -366,6 +423,12 @@ fn print_section(title: &str, total: usize, rows: impl Iterator<Item = String>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_chains_json() {
+        let cli = Cli::try_parse_from(["lndb", "chains", "--json"]).unwrap();
+        assert!(matches!(cli.command, Commands::Chains { json: true }));
+    }
 
     #[test]
     fn relativize_in_root_strips_root() {
